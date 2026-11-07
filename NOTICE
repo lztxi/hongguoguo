@@ -1,0 +1,56 @@
+NOTICE —— 来源、许可证与修改说明
+====================================
+
+本仓库是「红果短剧 Web 版（armv7 / 玩客云）」的自动构建工程，由以下两个上游项目组合而成。
+两者均为强 copyleft 许可证，组合后的整体按更严格的 AGPL-3.0 分发；本仓库即为该网络服务
+所提供的「完整对应源码」。
+
+一、上游来源
+------------------------------------
+1. jackotom/hongguo-drama
+   许可：GNU General Public License v3.0 (GPL-3.0)
+   用途：Electron 主进程 main.js、preload.js、React 前端 src/、vite 构建配置
+   取用方式：按 upstream.lock.json 锁定的 tag，从 codeload.github.com 下载源码归档，
+             原样放入 build/app/（不修改任何上游文件）。
+   上游 LICENSE / NOTICE / THIRD-PARTY-NOTICES.md 随源码一并保留。
+
+2. zfdang/hongguo-open-player
+   许可：GNU Affero General Public License v3.0 (AGPL-3.0)
+   用途：服务端流式解密播放内核，取 src/server/services/ 与 src/server/native/ 共 10 个
+         JavaScript 文件，作为 build/hgop/ 提供 /hgop/stream/:vid 播放能力。
+   取用方式：按锁定 tag 下载；上游 LICENSE 原文复制为 build/hgop/LICENSE。
+   注：上游部分源文件头部带有 `SPDX-License-Identifier: GPL-3.0-only` 标记，
+       与仓库级 AGPL-3.0 声明不一致。本工程不篡改这些头部，按仓库级 AGPL-3.0
+       （更严格、且为上游仓库 LICENSE 实际文本）履行义务。
+
+二、本工程新增的定制层（overlay/，原创部分）
+------------------------------------
+- shim/electron.js        Electron 兼容层：ipcMain.handle → HTTP IPC，
+                          webContents.send → SSE，protocol.handle → HTTP Range。
+- server/index.js         HTTP / SSE / Range 服务；/hgop/stream 与 /hgop/prefetch 路由；
+                          播放计划并发合并、保活、缓存管家、温和 GC、内存诊断接口。
+- web/gen-bridge.mjs      从上游 preload.js 自动生成 window.electronAPI 浏览器桥接，
+                          并把纯数字 vid 的播放切到 hgop 内核。
+- web/web-compat.js       非安全上下文(UUID/clipboard)补丁与 HEVC 解码能力探测。
+- web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本注入。
+- Dockerfile / docker-compose.yml / .dockerignore   armv7 容器构建与内存约束。
+
+三、对上游文件的唯一修改
+------------------------------------
+overlay/hgop/patches.json 定义了对 zfdang `src/server/services/streamService.js`
+的两处内存适配（增加 maxPlanCount 字段、把硬编码的计划数上限 8 改为可配置）。
+该补丁采用「锚点精确匹配 + 必须命中一次」策略：上游一旦改动被锚定的代码，
+sync/verify 会直接失败并提示人工合并，绝不会静默覆盖上游逻辑。
+除该补丁外，上游源码零修改。
+
+四、构建产物
+------------------------------------
+build/ 由 scripts/sync.mjs 生成，包含上游源码 + 定制层 + 前端构建产物，
+作为 docker build 的 context；镜像推送到 GHCR 后由 deploy/upgrade.sh 拉取升级。
+本仓库不提交上游源码副本、node_modules、dist-react 或任何二进制资源。
+
+五、义务提示
+------------------------------------
+AGPL-3.0 第 13 条：若你修改本程序并通过网络向用户提供服务，必须向这些用户提供
+「完整对应源码」的获取机会。公开本仓库、并在服务中提供指向本仓库的链接即可满足。
+请在部署时保留 /api/health 中的 BUILD-INFO 信息，并把 SOURCE_URL 指向你的仓库。
