@@ -19,7 +19,7 @@ const WRITE = process.argv.includes('--write');
 const lock = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
 
 const HEADERS = {
-  'User-Agent': 'hongguo-web-autobuild',
+  'User-Agent': 'hongguoguo',
   'Accept': 'application/vnd.github+json',
   ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
 };

@@ -2,7 +2,7 @@
 # IMAGE 在同目录 .env 里配置，或直接作为环境变量传给 deploy/*.sh。
 services:
   hongguo-web:
-    image: ${IMAGE:-ghcr.io/OWNER/hongguo-web-autobuild:latest}
+    image: ${IMAGE:-ghcr.io/lztxi/hongguoguo:latest}
     container_name: hongguo-web
     platform: linux/arm/v7
     restart: unless-stopped

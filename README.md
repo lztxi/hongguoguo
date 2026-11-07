@@ -1,4 +1,4 @@
-# hongguo-web-autobuild
+# hongguoguo
 
 把两个上游项目**自动合并**成一份可在玩客云（armv7）一键运行的 Docker 镜像：
 
@@ -55,21 +55,19 @@ deploy/                     玩客云侧 compose + install / upgrade / rollback
 
 ## 首次使用
 
-### 1. 建 GitHub 仓库并推送
+### 1. GitHub 仓库设置（代码已推送）
+
+仓库：<https://github.com/lztxi/hongguoguo>（public，AGPL-3.0，默认分支 `main`）。
 
 ```bash
-cd hongguo-web-autobuild
-git init -b main
-git add .
-git commit -m "feat: 双上游自动同步 + armv7 镜像构建"
-git remote add origin https://github.com/<你的用户名>/hongguo-web-autobuild.git
-git push -u origin main
+git clone https://github.com/lztxi/hongguoguo.git
+cd hongguoguo
 ```
 
 仓库设置：
 - **Settings → Actions → General → Workflow permissions**：勾选 `Read and write permissions`
   （`check-upstream.yml` 要开 PR，`build-image.yml` 要推 GHCR）；
-- 首次 `build-image` 跑完后，把 `hongguo-web-autobuild` 包的可见性改成 **Public**，
+- 首次 `build-image` 跑完后，把 `hongguoguo` 包的可见性改成 **Public**，
   玩客云才能匿名 `docker pull`；
 - 想立刻出第一版镜像：Actions → `build-image` → Run workflow。
 
@@ -80,7 +78,7 @@ git push -u origin main
 ```sh
 cd /root/hongguo-web-deploy
 cp .env.example .env
-vi .env                 # IMAGE=ghcr.io/<你的用户名>/hongguo-web-autobuild:latest
+vi .env                 # IMAGE=ghcr.io/lztxi/hongguoguo:latest
 chmod +x *.sh
 sh ./install.sh
 ```

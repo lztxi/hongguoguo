@@ -7,12 +7,10 @@ cd "$DIR"
 
 if [ ! -f .env ]; then
   cp .env.example .env
-  echo "==> 已生成 .env，请先编辑里面的 IMAGE（把 OWNER 换成你的 GitHub 用户名）"
-  echo "    然后重新执行：sh ./install.sh"
-  exit 0
+  echo "==> 已生成 .env（默认镜像 ghcr.io/lztxi/hongguoguo:latest）"
 fi
 . ./.env
-IMAGE=${IMAGE:-ghcr.io/OWNER/hongguo-web-autobuild:latest}
+IMAGE=${IMAGE:-ghcr.io/lztxi/hongguoguo:latest}
 export IMAGE
 
 case "$IMAGE" in

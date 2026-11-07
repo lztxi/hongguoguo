@@ -45,7 +45,7 @@ async function download(url, dest) {
     return;
   }
   log('下载', url);
-  const res = await fetch(url, { headers: { 'User-Agent': 'hongguo-web-autobuild' } });
+  const res = await fetch(url, { headers: { 'User-Agent': 'hongguoguo' } });
   if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}: ${url}`);
   fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 }
@@ -182,7 +182,7 @@ const info = {
   jackotom: { repo: j.repo, tag: j.tag, sha: j.sha, license: j.license },
   zfdang: { repo: z.repo, tag: z.tag, sha: z.sha, license: z.license },
   patches: patchIds,
-  sourceUrl: process.env.SOURCE_URL || 'https://github.com/OWNER/hongguo-web-autobuild',
+  sourceUrl: process.env.SOURCE_URL || 'https://github.com/lztxi/hongguoguo',
 };
 fs.writeFileSync(path.join(BUILD, 'BUILD-INFO.json'), JSON.stringify(info, null, 2) + '\n');
 log(`完成 → ${BUILD}`);

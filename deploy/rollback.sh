@@ -6,7 +6,7 @@ set -eu
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$DIR"
 [ -f .env ] && . ./.env
-IMAGE=${IMAGE:-ghcr.io/OWNER/hongguo-web-autobuild:latest}
+IMAGE=${IMAGE:-ghcr.io/lztxi/hongguoguo:latest}
 export IMAGE
 
 OLD=$(cat .previous-image-id 2>/dev/null || true)
