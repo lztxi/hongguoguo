@@ -1,4 +1,4 @@
-# hongguo-web-autobuild
+# hongguoguo
 
 把两个上游项目**自动合并**成一份可在玩客云（armv7）一键运行的 Docker 镜像：
 
