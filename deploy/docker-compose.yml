@@ -1,0 +1,26 @@
+# 玩客云部署用：只拉 GHCR 镜像，不在本机编译（armv7 / 988MB 内存很吃紧）。
+# IMAGE 在同目录 .env 里配置，或直接作为环境变量传给 deploy/*.sh。
+services:
+  hongguo-web:
+    image: ${IMAGE:-ghcr.io/OWNER/hongguo-web-autobuild:latest}
+    container_name: hongguo-web
+    platform: linux/arm/v7
+    restart: unless-stopped
+    ports:
+      # 636 是 LDAPS，被 Chromium 列入不安全端口黑名单，必须用 9636
+      - "9636:9636"
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "9636"
+      HONGGUO_DATA_DIR: /app/data
+      # 播放时 heap 峰值约 24MB；压到 128MB 让 V8 及时回收 ArrayBuffer
+      NODE_OPTIONS: "--max-old-space-size=128 --expose-gc"
+    volumes:
+      # 设置 / 下载任务 / 观看历史 / 账号会话 / 已下载视频 —— 升级绝不覆盖
+      - ./data:/app/data
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"

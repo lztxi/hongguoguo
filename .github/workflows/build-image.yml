@@ -1,0 +1,100 @@
+name: build-image
+
+# PR 合并到 main 后构建 armv7（玩客云）镜像并推送 GHCR。
+# 玩客云不再需要本地编译，deploy/upgrade.sh 直接 pull 即可。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: '目标平台（逗号分隔）'
+        required: false
+        default: 'linux/arm/v7'
+      push:
+        description: '是否推送到 GHCR'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 同步两个上游并叠加定制层
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_REGISTRY: https://registry.npmjs.org
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: node scripts/sync.mjs
+
+      - name: 校验
+        run: node scripts/verify.mjs
+
+      - name: 解析版本号与镜像名
+        id: ver
+        run: |
+          J=$(node -p "require('./upstream.lock.json').jackotom.tag")
+          Z=$(node -p "require('./upstream.lock.json').zfdang.tag")
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "j=$J" >> "$GITHUB_OUTPUT"
+          echo "z=$Z" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/$REPO" >> "$GITHUB_OUTPUT"
+          echo "tag=$J-$Z-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        if: github.event_name != 'workflow_dispatch' || inputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: ./build
+          file: ./build/Dockerfile
+          platforms: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux/arm/v7' }}
+          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push == 'true' }}
+          tags: |
+            ${{ steps.ver.outputs.image }}:latest
+            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=hongguo-web armv7 auto build
+            hongguo.upstream.jackotom=${{ steps.ver.outputs.j }}
+            hongguo.upstream.zfdang=${{ steps.ver.outputs.z }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: 升级命令摘要
+        run: |
+          echo "### 镜像已发布" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "IMAGE=${{ steps.ver.outputs.image }}:latest ./deploy/upgrade.sh" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "上游：jackotom ${{ steps.ver.outputs.j }} + zfdang ${{ steps.ver.outputs.z }}" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,44 @@
+name: verify
+
+# 每次 PR（尤其是自动升级 PR）都做一次完整「拉上游 → 叠加 overlay → 构建前端 → 校验」。
+# 只要上游改了补丁锚点、preload 结构、前端构建方式，这里就会红，不会带着隐患合并。
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 同步两个上游并叠加定制层
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_REGISTRY: https://registry.npmjs.org
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: node scripts/sync.mjs
+
+      - name: 校验补丁 / 桥接 / 语法 / 前端产物
+        run: node scripts/verify.mjs
+
+      - name: 输出构建摘要
+        run: |
+          echo "### 同步结果" >> "$GITHUB_STEP_SUMMARY"
+          node -e "const b=require('./build/BUILD-INFO.json');console.log('- jackotom: '+b.jackotom.tag+' ('+b.jackotom.sha.slice(0,10)+')');console.log('- zfdang: '+b.zfdang.tag+' ('+b.zfdang.sha.slice(0,10)+')');console.log('- 补丁: '+(b.patches.join(', ')||'无'))" >> "$GITHUB_STEP_SUMMARY"

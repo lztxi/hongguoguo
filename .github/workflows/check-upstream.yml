@@ -1,0 +1,48 @@
+name: check-upstream
+
+# 每 6 小时检查两个上游的正式发行版；有更新就自动开一个只改 lock 文件的 PR。
+# PR 会触发 verify.yml 做完整同步与兼容性校验，通过后再由人工合并 → build-image.yml 出镜像。
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 检查上游最新发行版
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/check-upstream.mjs --write
+
+      - name: 生成/更新升级 PR
+        if: steps.check.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: chore/upstream-bump
+          delete-branch: true
+          add-paths: upstream.lock.json
+          commit-message: 'chore: 上游更新 ${{ steps.check.outputs.summary }}'
+          title: 'chore: 上游更新 ${{ steps.check.outputs.summary }}'
+          body-path: .cache/pr-body.md
+
+      - name: 无更新
+        if: steps.check.outputs.changed != 'true'
+        run: echo "两个上游均无新发行版，保持 ${{ steps.check.outputs.summary }}"

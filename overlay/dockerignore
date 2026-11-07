@@ -1,0 +1,9 @@
+app/node_modules
+app/dist
+app/*.log
+data
+web
+*.md
+.git
+.gitignore
+app/public

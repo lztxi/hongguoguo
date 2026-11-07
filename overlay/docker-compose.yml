@@ -1,0 +1,30 @@
+services:
+  hongguo-web:
+    build: .
+    image: hongguo-web:armv7
+    container_name: hongguo-web
+    platform: linux/arm/v7
+    restart: unless-stopped
+    ports:
+      # 9636：636(LDAPS) 被 Chromium/Firefox 列入不安全端口黑名单，浏览器会直接
+      # 报 ERR_UNSAFE_PORT 拒绝访问，因此改用 9636（容器内外一致）。
+      # 633 抖音工具 / 634 旧观影台（已下线） / 635 hongguo-open
+      - "9636:9636"
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "9636"
+      HONGGUO_DATA_DIR: /app/data
+      # armv7 32 位整机内存紧：实测 heap 峰值仅 ~24MB，把堆上限从 192MB 压到 128MB，
+      # 让 V8 更及时回收播放时持续分配的 ArrayBuffer；--expose-gc 供空闲兜底 GC。
+      # 不设 max-semi-space-size：压太小会让 scavenge 过频，在 armv7 上 CPU 跑满。
+      # （镜像里 ENV 的默认值 192 会被此处覆盖）
+      NODE_OPTIONS: "--max-old-space-size=128 --expose-gc"
+    volumes:
+      # 设置 / 下载任务 / 观看历史 / 账号会话 / 下载的视频
+      - ./data:/app/data
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"

@@ -1,0 +1,16 @@
+# 生成的构建上下文与缓存绝不入库
+build/
+.cache/
+*.zip
+node_modules/
+dist-react/
+
+# 部署机上的私有数据 / 状态
+deploy/data/
+deploy/.env
+*.previous-image-id
+*.log
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db

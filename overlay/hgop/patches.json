@@ -1,0 +1,20 @@
+{
+  "note": "对 zfdang/hongguo-open-player 服务端流内核的唯一修改：让分片计划缓存数量可配置，适配玩客云 256MB 容器。find 必须在目标文件中精确命中 1 次，否则 sync 会失败并要求人工合并。",
+  "files": [
+    {
+      "path": "services/streamService.js",
+      "edits": [
+        {
+          "id": "add-maxPlanCount-field",
+          "find": "    this.maxPlanBytes = 32 * 1024 * 1024;\n    this.activeStreams = 0;",
+          "replace": "    this.maxPlanBytes = 32 * 1024 * 1024;\n    // [hongguo-web 内存适配] 允许部署方限制常驻计划数量；上游默认 8 个。\n    this.maxPlanCount = 8;\n    this.activeStreams = 0;"
+        },
+        {
+          "id": "plans-limit-configurable",
+          "find": "        while (this.plans.size > 8 ||",
+          "replace": "        // [hongguo-web 内存适配] 上限改由 maxPlanCount 控制，由部署方的环境变量配置。\n        while (this.plans.size > (this.maxPlanCount || 8) ||"
+        }
+      ]
+    }
+  ]
+}
