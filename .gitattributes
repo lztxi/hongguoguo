@@ -1,0 +1,16 @@
+# 部署脚本会在玩客云（Linux）上直接执行，CRLF 会导致 `/bin/sh^M: bad interpreter`。
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.cjs text eol=lf
+Dockerfile text eol=lf
+NOTICE text eol=lf
+LICENSE text eol=lf
+dockerignore text eol=lf
+.env.example text eol=lf
