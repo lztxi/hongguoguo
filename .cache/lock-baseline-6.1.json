@@ -1,0 +1,37 @@
+{
+  "comment": "当前镜像所基于的上游版本。运行 `node scripts/check-upstream.mjs --write` 可更新到最新发行版；CI 会为每次变化自动开 PR。",
+  "checkedAt": "2026-11-07T13:41:05.611Z",
+  "jackotom": {
+    "repo": "jackotom/hongguo-drama",
+    "tag": "v6.2",
+    "sha": "affc81c7f885bcdbcbc06e4c205b820c61f9c0c4",
+    "license": "GPL-3.0",
+    "role": "桌面版主进程 / React 前端 / preload 桥接来源",
+    "note": "玩客云当前运行版本。上游 v6.2 已于 2026-11-07 发布，合并自动 PR 即可升级。",
+    "publishedAt": "2026-11-07T11:17:12Z"
+  },
+  "zfdang": {
+    "repo": "zfdang/hongguo-open-player",
+    "tag": "v1.7.1",
+    "sha": "2e6bf2bb61ed9343621d7df759677e8fbe09e448",
+    "license": "AGPL-3.0",
+    "role": "服务端 CENC-MP4 流式解密播放内核（hgop/）",
+    "note": "src/server/{services,native} 共 10 个文件；仅 streamService.js 需要内存适配补丁。",
+    "publishedAt": "2026-11-07T09:37:39Z"
+  },
+  "watchPaths": [
+    "main.js",
+    "preload.js",
+    "package.json",
+    "package-lock.json",
+    "index.html",
+    "vite.config.js",
+    "src/components/Player.jsx",
+    "src/components/SoftwareVideo.jsx",
+    "src/native/watch-history.js",
+    "src/native/bytevc2.js",
+    "src/server/services/streamService.js",
+    "src/server/services/rangeMedia.js",
+    "src/server/native/app-source.js"
+  ]
+}
