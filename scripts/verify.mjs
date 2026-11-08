@@ -110,6 +110,20 @@ if (requireFrontend) {
   notes.push('  ⚠️  SKIP_FRONTEND=1：已跳过前端产物检查');
 }
 
+// 7. 空闲降级（玩客云 armv7 长时间无人使用时压低占用）
+if (exists('server/index.js')) {
+  const srv = read('server/index.js');
+  check('空闲阈值可配置', srv.includes('HONGGUO_IDLE_SLEEP_MINUTES'));
+  check('空闲降级可一键禁用', srv.includes("HONGGUO_IDLE_SLEEP !== '0'"));
+  check('心跳/SSE 不计入活跃', srv.includes("pathname !== '/api/health' && pathname !== '/api/events'"));
+  check('播放中不降级', srv.includes('function isBusy()') && srv.includes('hgopWarming.size > 0'));
+  check('空闲后清缓存并 full GC',
+    srv.includes('hgop.plans.clear()') && srv.includes('hgop.cache.clear()')
+    && srv.includes('global.gc(); global.gc();'));
+  check('GC 门槛已从 80MB 下调', srv.includes('before < 40 * MBYTES') && !srv.includes('before < 80 * MBYTES'));
+  check('health 暴露 idle 状态', srv.includes('idle: idleSnapshot()'));
+}
+
 console.log(notes.join('\n'));
 if (failures.length) {
   console.error('\n[verify] 失败：\n' + failures.join('\n'));

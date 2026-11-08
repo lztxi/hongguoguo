@@ -18,6 +18,10 @@ services:
       HONGGUO_DATA_DIR: /app/data
       # 播放时 heap 峰值约 24MB；压到 128MB 让 V8 及时回收 ArrayBuffer
       NODE_OPTIONS: "--max-old-space-size=128 --expose-gc"
+      # 长时间无人使用时自动清缓存 + full GC（心跳/SSE 不算使用，播放中绝不降级）
+      HONGGUO_IDLE_SLEEP_MINUTES: "${IDLE_SLEEP_MINUTES:-30}"
+      # 设为 0 可一键禁用空闲降级，回到旧行为
+      HONGGUO_IDLE_SLEEP: "${IDLE_SLEEP:-1}"
     volumes:
       # 设置 / 下载任务 / 观看历史 / 账号会话 / 已下载视频 —— 升级绝不覆盖
       - ./data:/app/data

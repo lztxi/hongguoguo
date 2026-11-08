@@ -127,7 +127,7 @@ cd /root/hongguo-web-deploy && sh ./upgrade.sh
 `upstream.lock.json` 当前锁定 **jackotom v6.2 + zfdang v1.7.2**。6.2 相对 6.1 只改了
 观看记录续作判断、切集画面交接、转码排队回调与版本号；v1.7.2 相对 1.7.1 只有
 README 与一篇架构文档，**播放内核代码零改动**。已用 `scripts/sync.mjs` + `verify.mjs`
-完整验证：补丁重放成功、桥接仍生成 111 个 invoke、42 项校验全通过。
+完整验证：补丁重放成功、桥接仍生成 111 个 invoke、49 项校验全通过。
 
 玩客云 9636 自 2026-11-08 起已运行基于 6.2 的 GHCR 镜像，升级只需 `./update.sh`。
 
@@ -139,6 +139,33 @@ README 与一篇架构文档，**播放内核代码零改动**。已用 `scripts
 （`17 0 */3 * *`，UTC 00:17 = 北京 08:17）。注意 GitHub cron 的 `*/3` 是「每月
 1/4/7/… 号」的日历语义，跨月会重置；另外 GitHub 会停用连续 60 天无任何仓库活动的
 scheduled workflow，上游长期不发版时偶尔手动 Run workflow 一次即可。
+
+## 空闲降级与每周维护（低配设备）
+
+服务常驻在 988MB 内存的 armv7 玩客云上，长时间无人使用时会自动进入低功耗状态：
+
+- **判定**：`/api/health`（Docker 每 60s 的健康检查）与 `/api/events`（SSE 长连接 +
+  20s ping）不算「使用」；正在播放 / 预热 / 分片进行中一律不降级，避免看到一半卡住。
+- **动作**：无业务请求达到阈值后清空 hgop 分片计划与 LRU 缓存、连做两次 full GC，
+  把播放期间 axios 分配的 ArrayBuffer 尽量还给系统。**不关服务、不断连接**，
+  任何业务请求到达即无感唤醒；代价是唤醒后首播要重建一次分片计划（约 1~2s）。
+- **默认 30 分钟**，由 `deploy/.env.example` 的 `IDLE_SLEEP_MINUTES` 调整，
+  `IDLE_SLEEP=0` 可一键禁用。状态可在 `/api/health` 的 `idle` 字段查看
+  （`sleeping` / `idleSeconds` / `sleepCount` / `rssAfterSleepMB`）。
+- 顺带修掉一个老问题：兜底 GC 的门槛原为 80MB，而 armv7 常态 RSS 只有 45~56MB，
+  导致 `gc.count` 长期为 0、兜底形同虚设；已下调到 40MB。
+
+`deploy/maintain.sh` 是每周低峰重启（回收长期堆增长），带活跃保护：正在播放、
+有页面打开、10 分钟内有人操作都会跳过；健康检查失败也不重启。注册方式：
+
+```sh
+chmod +x /root/hongguo-web/maintain.sh
+# crontab -e 追加，周一 04:37 避开青龙 23 */3 * * * 的任务点
+37 4 * * 1 /root/hongguo-web/maintain.sh >> /root/hongguo-web/maintain.log 2>&1
+```
+
+> 深度休眠（`docker stop` + 常驻门卫按需唤醒，可把内存降到 0）方案已实测可行，
+> 但需要门卫接管 SSE 心跳、改端口映射，且首次唤醒 4~5s，**当前未启用**。
 
 ## 本地复现构建（不推镜像）
 

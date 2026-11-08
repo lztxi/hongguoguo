@@ -395,11 +395,96 @@ function hgopSnapshot() {
   };
 }
 
-// ------------------------------------------------- 缓存管家 / 温和 GC（armv7 内存适配）
+// ------------------------------------------------- 缓存管家 / 空闲降级（armv7 内存适配）
 let gcCount = 0;
 let lastGcAt = 0;
 let lastGcRssMB = 0;
 let janitorRemoved = 0;
+
+/**
+ * 长时间没人用时把进程压到最低占用：
+ *   - 心跳类请求（Docker HEALTHCHECK 的 /api/health、浏览器 SSE 长连接 /api/events）
+ *     不算「使用」，否则 60s 一次的健康检查会让空闲判定永远不生效；
+ *   - 有播放流 / 预热任务 / 进行中的分片时一律不降级，避免看到一半卡住；
+ *   - 达到阈值后清空 hgop 分片计划与 LRU 缓存，连做两次 full GC，
+ *     把播放期间 axios 分配的 512KB ArrayBuffer 尽量还给系统；
+ *   - 只清缓存，不关服务、不断连接，任何业务请求到达即无感唤醒
+ *     （代价：唤醒后首播要重建一次分片计划，约 1~2s）。
+ * 阈值用 HONGGUO_IDLE_SLEEP_MINUTES 调整（默认 30 分钟），
+ * HONGGUO_IDLE_SLEEP=0 可整体禁用，方便出问题时秒回原行为。
+ */
+const IDLE_SLEEP_ENABLED = process.env.HONGGUO_IDLE_SLEEP !== '0';
+const IDLE_SLEEP_MINUTES = Math.min(24 * 60, Math.max(1,
+  Number(process.env.HONGGUO_IDLE_SLEEP_MINUTES || 30) || 30));
+const IDLE_SLEEP_MS = IDLE_SLEEP_MINUTES * 60 * 1000;
+let lastActivityAt = Date.now();
+let sleeping = false;
+let sleepCount = 0;
+let wakeCount = 0;
+let lastSleepAt = 0;
+let lastDropCount = 0;
+let lastSleepRssMB = 0;
+
+function isBusy() {
+  return !!(hgop && (hgop.activeStreams > 0 || hgopWarming.size > 0
+    || (hgop.inFlight && hgop.inFlight.size > 0)
+    || (hgop.waitingStreams && hgop.waitingStreams.length > 0)));
+}
+
+function noteActivity() {
+  lastActivityAt = Date.now();
+  if (sleeping) {
+    sleeping = false;
+    wakeCount++;
+    log(`[idle] 业务请求到达，唤醒（第 ${wakeCount} 次）`);
+  }
+}
+
+function idleSnapshot() {
+  return {
+    enabled: IDLE_SLEEP_ENABLED,
+    sleeping,
+    sleepCount,
+    wakeCount,
+    idleSeconds: Math.round((Date.now() - lastActivityAt) / 1000),
+    thresholdMinutes: IDLE_SLEEP_MINUTES,
+    busy: isBusy(),
+    lastSleepAt: lastSleepAt ? new Date(lastSleepAt).toISOString() : null,
+    droppedPlans: lastDropCount,
+    rssAfterSleepMB: lastSleepRssMB,
+  };
+}
+
+function enterIdleSleep() {
+  sleeping = true;
+  sleepCount++;
+  lastSleepAt = Date.now();
+  const before = mb(process.memoryUsage().rss);
+  let dropped = 0;
+  try {
+    if (hgop) {
+      dropped = hgop.plans.size + hgop.cache.size;
+      hgop.plans.clear();
+      hgop.cache.clear();
+    }
+  } catch (error) {
+    log('[idle] 清缓存跳过:', error?.message || error);
+  }
+  lastDropCount = dropped;
+  // 连续两次 full GC：V8 需要多轮标记才能收干净跨代引用
+  if (typeof global.gc === 'function') {
+    try { global.gc(); global.gc(); gcCount += 2; } catch { /* 未开 --expose-gc */ }
+  }
+  lastGcAt = Date.now(); // 避免管家紧接着又触发一次 GC
+  lastSleepRssMB = mb(process.memoryUsage().rss);
+  log(`[idle] 空闲 ${IDLE_SLEEP_MINUTES} 分钟 → 低功耗：清 ${dropped} 项缓存，RSS ${before}MB -> ${lastSleepRssMB}MB`);
+}
+
+function evaluateIdle() {
+  if (!IDLE_SLEEP_ENABLED || sleeping || isBusy()) return;
+  if (Date.now() - lastActivityAt < IDLE_SLEEP_MS) return;
+  enterIdleSleep();
+}
 
 /**
  * 上游只在「新建计划」时淘汰 plans，播放结束后 8 个计划会一直驻留到下次播放。
@@ -430,13 +515,15 @@ function pruneHgopCaches() {
  * 播放时 axios 会持续分配 512KB ArrayBuffer，V8 只有在堆吃紧时才回收它们。
  * 这里只在「无活跃流 + RSS 偏高」时做一次兜底 full GC，限频 120s，
  * 避免 armv7 上频繁 full GC 占满 CPU 造成播放卡顿。
+ * 门槛 80MB → 40MB：armv7 常态 RSS 只有 45~56MB，原门槛让这个兜底
+ * 从未触发过（线上 health 的 gc.count 长期为 0），等于形同虚设。
  */
 function maybeGc(reason) {
   if (typeof global.gc !== 'function') return;
   const now = Date.now();
   if (now - lastGcAt < 120000) return;
   const before = process.memoryUsage().rss;
-  if (before < 80 * MBYTES) return;
+  if (before < 40 * MBYTES) return;
   if (hgop && hgop.activeStreams > 0) return;
   lastGcAt = now;
   gcCount++;
@@ -450,8 +537,9 @@ function maybeGc(reason) {
 }
 
 const cacheJanitor = setInterval(() => {
-  janitorRemoved += pruneHgopCaches();
-  maybeGc('idle');
+  if (!sleeping) janitorRemoved += pruneHgopCaches();
+  evaluateIdle();
+  if (!sleeping) maybeGc('idle');
 }, 30000);
 cacheJanitor.unref();
 
@@ -480,6 +568,10 @@ const server = http.createServer(async (req, res) => {
     res.end(); return;
   }
 
+  // Docker HEALTHCHECK 每 60s 打 /api/health，浏览器 SSE 长连接只在建立时
+  // 请求一次 /api/events 之后每 20s 发 ping：这两类都不算「有人在用」。
+  if (pathname !== '/api/health' && pathname !== '/api/events') noteActivity();
+
   if (pathname === '/api/health') {
     json(res, 200, {
       ok: mainReady,
@@ -500,6 +592,7 @@ const server = http.createServer(async (req, res) => {
         prunedPlans: janitorRemoved,
         heapLimitMB: mb(require('node:v8').getHeapStatistics().heap_size_limit),
       },
+      idle: idleSnapshot(),
     });
     return;
   }
@@ -529,7 +622,10 @@ const server = http.createServer(async (req, res) => {
   await serveStatic(req, res, pathname);
 });
 
-server.listen(PORT, HOST, () => log(`红果短剧 Web 版已监听 http://${HOST}:${PORT}`));
+server.listen(PORT, HOST, () => {
+  log(`红果短剧 Web 版已监听 http://${HOST}:${PORT}`);
+  log(`[idle] 空闲降级${IDLE_SLEEP_ENABLED ? `已启用：无业务请求 ${IDLE_SLEEP_MINUTES} 分钟后清缓存 + full GC` : '已禁用'}`);
+});
 
 const keepAlive = setInterval(() => { log(`[心跳] SSE ${clients.size} 客户端, RSS ${Math.round(process.memoryUsage().rss / 1048576)}MB`); }, 5 * 60 * 1000);
 keepAlive.unref();
