@@ -16,10 +16,11 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 mkdir -p backups
 cp docker-compose.yml "backups/docker-compose.$STAMP.yml" 2>/dev/null || true
 
-OLD=$(docker inspect --format '{{.Id}}' hongguo-web 2>/dev/null || true)
+# 必须是镜像 ID(.Image)，不是容器 ID(.Id)，否则 rollback.sh 会找不到镜像
+OLD=$(docker inspect --format '{{.Image}}' hongguo-web 2>/dev/null || true)
 if [ -n "$OLD" ]; then
   printf '%s\n' "$OLD" > .previous-image-id
-  echo "==> 已记录当前镜像 ${OLD}（可回滚）"
+  echo "==> 已记录回滚点镜像 ${OLD}（可回滚）"
 fi
 
 if ! docker compose pull; then

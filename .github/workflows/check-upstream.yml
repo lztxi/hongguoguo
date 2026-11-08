@@ -1,10 +1,17 @@
 name: check-upstream
 
-# 每 6 小时检查两个上游的正式发行版；有更新就自动开一个只改 lock 文件的 PR。
+# 每 3 天检查两个上游的正式发行版；有更新就自动开一个只改 lock 文件的 PR。
 # PR 会触发 verify.yml 做完整同步与兼容性校验，通过后再由人工合并 → build-image.yml 出镜像。
+#
+# 关于「3 天」：GitHub Actions cron 没有「每隔 N 小时」这种相对语义，
+# day-of-month 上的 */3 是「每月 1/4/7/.../31 号」，跨月会重置（1/31 → 2/1 只隔 1 天）。
+# 需要严格 72 小时间隔时，可把 cron 改成每天、再由脚本按 checkedAt 自行节流。
+# 另外 GitHub 会停用「连续 60 天无任何仓库活动」的 scheduled workflow，
+# 上游长期不发版时，偶尔手动 Run workflow 一次即可保持调度活跃。
 on:
   schedule:
-    - cron: '17 */6 * * *'
+    # UTC 00:17 = 北京时间 08:17，每 3 天一次；避开整点可降低被调度丢弃的概率
+    - cron: '17 0 */3 * *'
   workflow_dispatch:
 
 permissions:
@@ -18,6 +25,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -29,10 +37,22 @@ jobs:
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/check-upstream.mjs --write
+        run: |
+          node scripts/check-upstream.mjs --write | tee /tmp/check.log
+          {
+            echo '### 上游检测结果'
+            echo ''
+            echo '```'
+            grep '^\[check\]' /tmp/check.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 生成/更新升级 PR
+        id: pr
         if: steps.check.outputs.changed == 'true'
+        # 检测与开 PR 解耦：PR 创建失败（权限/限流/网络）不该把「检测成功」标红，
+        # 结果仍写在 step summary 里，下面单独给出明确的修复指引。
+        continue-on-error: true
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -42,6 +62,31 @@ jobs:
           commit-message: 'chore: 上游更新 ${{ steps.check.outputs.summary }}'
           title: 'chore: 上游更新 ${{ steps.check.outputs.summary }}'
           body-path: .cache/pr-body.md
+
+      - name: PR 未能自动创建（检测结果仍然有效）
+        if: steps.check.outputs.changed == 'true' && steps.pr.outcome == 'failure'
+        run: |
+          echo "::warning title=检测到上游更新，但自动开 PR 失败::请在 Actions 权限页开启两个开关后重跑"
+          {
+            echo '### ⚠️ 检测到上游更新，但自动开 PR 失败'
+            echo ''
+            echo '检测结果已生成（`upstream.lock.json` 在本次运行中已更新），但没能推送分支/创建 PR。'
+            echo '请到 **Settings → Actions → General** 检查这两项：'
+            echo ''
+            echo '1. **Workflow permissions** 选 `Read and write permissions`；'
+            echo '2. 勾选 **Allow GitHub Actions to create and approve pull requests**（默认关闭，最常被漏掉）。'
+            echo ''
+            echo '改完后重跑本工作流即可；也可本地执行 `node scripts/check-upstream.mjs --write` 后自行推送。'
+            echo ''
+            echo "本次检测：\`${{ steps.check.outputs.summary }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 检测接口异常提示
+        if: steps.check.outputs.check_failed == 'true'
+        run: |
+          echo "::warning::部分上游查询失败，本次结果可能不完整：${{ steps.check.outputs.failed_repos }}"
+          echo '### ⚠️ 部分上游查询失败' >> "$GITHUB_STEP_SUMMARY"
+          echo '失败仓库：`${{ steps.check.outputs.failed_repos }}`（多为 GitHub API 限流，下次运行会自动重试）' >> "$GITHUB_STEP_SUMMARY"
 
       - name: 无更新
         if: steps.check.outputs.changed != 'true'

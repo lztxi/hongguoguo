@@ -21,7 +21,7 @@ Web 化改造层（Electron shim / HTTP+SSE 服务 / 浏览器桥接 / 内存优
 ```
 upstream.lock.json  ──锁定──>  两个上游的 tag + commit sha
         │
-        ├─ check-upstream.yml  每 6h 查最新发行版 → 自动开 PR（只改 lock 文件）
+        ├─ check-upstream.yml  每 3 天查最新发行版 → 自动开 PR（只改 lock 文件）
         │
         ├─ verify.yml         PR 里重新拉源码 + 叠加 overlay + 重放补丁 + 构建前端
         │                     └─ 补丁锚点被上游改动 / preload 结构变化 → 直接失败，不静默合并
@@ -80,9 +80,11 @@ cd hongguoguo
 仓库设置：
 - **Settings → Actions → General → Workflow permissions**：勾选 `Read and write permissions`
   （`check-upstream.yml` 要开 PR，`build-image.yml` 要推 GHCR）；
+- 同一页面还要勾选 **Allow GitHub Actions to create and approve pull requests** ——
+  这个开关默认关闭，是「检测成功但自动开 PR 失败」最常见的原因；
 - 首次 `build-image` 跑完后，把 `hongguoguo` 包的可见性改成 **Public**，
   玩客云才能匿名 `docker pull`；
-- 想立刻出第一版镜像：Actions → `build-image` → Run workflow。
+- 想手动重建镜像：Actions → `build-image` → Run workflow（push 到 main 也会自动触发）。
 
 ### 2. 玩客云部署
 
@@ -116,20 +118,27 @@ cd /root/hongguo-web-deploy && sh ./upgrade.sh
 
 出问题时 `sh ./rollback.sh` 回到上一版镜像。`upgrade.sh` 会在健康检查失败时自动回滚。
 
+> 当前玩客云实际部署目录是 `/root/hongguo-web`（已改成纯镜像 compose，不再本机编译），
+> 日常用 `cd /root/hongguo-web && ./update.sh`，回滚用 `./rollback.sh`；
+> 上面 `deploy/` 的用法适用于全新机器从零部署。
+
 ### 版本基线
 
-`upstream.lock.json` 当前锁定 **jackotom v6.2 + zfdang v1.7.1**。6.2 相对 6.1 只改了
-观看记录续作判断、切集画面交接、转码排队回调与版本号，没有新增依赖、没有新增
-Electron API、`preload.js` 只改注释 —— 已用 `scripts/sync.mjs` + `verify.mjs`
-完整验证：补丁重放成功、桥接仍生成 111 个 invoke、36 项校验全通过。
+`upstream.lock.json` 当前锁定 **jackotom v6.2 + zfdang v1.7.2**。6.2 相对 6.1 只改了
+观看记录续作判断、切集画面交接、转码排队回调与版本号；v1.7.2 相对 1.7.1 只有
+README 与一篇架构文档，**播放内核代码零改动**。已用 `scripts/sync.mjs` + `verify.mjs`
+完整验证：补丁重放成功、桥接仍生成 111 个 invoke、42 项校验全通过。
 
-玩客云**线上仍是 6.1**，首次执行 `deploy/upgrade.sh` 拉到的就是 6.2 镜像，
-相当于顺带完成这次升级。之后上游再发新版，才由机器人自动开 PR。
+玩客云 9636 自 2026-11-08 起已运行基于 6.2 的 GHCR 镜像，升级只需 `./update.sh`。
 
 想临时改用别的版本：编辑 `upstream.lock.json` 的 `tag` / `sha` 后推送即可。
 `sha` 只用于构建信息追溯，实际下载用 tag；可用
 `git ls-remote https://github.com/jackotom/hongguo-drama refs/tags/v6.2` 查询。
-定时检查频率在 `.github/workflows/check-upstream.yml` 的 `cron`（默认每 6 小时）修改。
+
+定时检查在 `.github/workflows/check-upstream.yml` 的 `cron`，**默认每 3 天一次**
+（`17 0 */3 * *`，UTC 00:17 = 北京 08:17）。注意 GitHub cron 的 `*/3` 是「每月
+1/4/7/… 号」的日历语义，跨月会重置；另外 GitHub 会停用连续 60 天无任何仓库活动的
+scheduled workflow，上游长期不发版时偶尔手动 Run workflow 一次即可。
 
 ## 本地复现构建（不推镜像）
 

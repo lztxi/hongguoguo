@@ -1,23 +1,23 @@
 {
   "comment": "当前镜像所基于的上游版本。运行 `node scripts/check-upstream.mjs --write` 可更新到最新发行版；CI 会为每次变化自动开 PR。",
-  "checkedAt": "2026-11-07T13:41:09.724Z",
+  "checkedAt": "2026-11-08T05:34:48.587Z",
   "jackotom": {
     "repo": "jackotom/hongguo-drama",
     "tag": "v6.2",
     "sha": "affc81c7f885bcdbcbc06e4c205b820c61f9c0c4",
     "license": "GPL-3.0",
     "role": "桌面版主进程 / React 前端 / preload 桥接来源",
-    "note": "已本地验证与全部定制层兼容（两处 hgop 补丁重放成功、桥接仍为 111 invoke）。玩客云线上仍为 6.1，首次执行 deploy/upgrade.sh 即切到 6.2。",
+    "note": "已验证与全部定制层兼容（两处 hgop 补丁重放成功、桥接仍为 111 invoke）。玩客云 9636 自 2026-11-08 起已运行基于 6.2 的 GHCR 镜像，采用纯 compose 部署。",
     "publishedAt": "2026-11-07T11:17:12Z"
   },
   "zfdang": {
     "repo": "zfdang/hongguo-open-player",
-    "tag": "v1.7.1",
-    "sha": "2e6bf2bb61ed9343621d7df759677e8fbe09e448",
+    "tag": "v1.7.2",
+    "sha": "0796543ec72a6e91ca33540ba4e27e0ba3690a63",
     "license": "AGPL-3.0",
     "role": "服务端 CENC-MP4 流式解密播放内核（hgop/）",
     "note": "sync.mjs 复制 src/server/{services,native} 下全部 .js（当前 5+14 个，依赖自动带齐）；仅 streamService.js 需要内存适配补丁。",
-    "publishedAt": "2026-11-07T09:37:39Z"
+    "publishedAt": "2026-11-07T15:04:38Z"
   },
   "watchPaths": [
     "main.js",

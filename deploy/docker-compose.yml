@@ -1,5 +1,8 @@
 # 玩客云部署用：只拉 GHCR 镜像，不在本机编译（armv7 / 988MB 内存很吃紧）。
 # IMAGE 在同目录 .env 里配置，或直接作为环境变量传给 deploy/*.sh。
+# 显式声明 project name，换目录部署时也不会残留旧容器 / 旧网络。
+name: hongguo-web
+
 services:
   hongguo-web:
     image: ${IMAGE:-ghcr.io/lztxi/hongguoguo:latest}

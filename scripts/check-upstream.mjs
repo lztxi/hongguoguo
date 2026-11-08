@@ -26,9 +26,15 @@ const HEADERS = {
 
 async function api(pathname) {
   const url = pathname.startsWith('http') ? pathname : `https://api.github.com${pathname}`;
-  const res = await fetch(url, { headers: HEADERS });
-  if (!res.ok) throw new Error(`GitHub API ${res.status} ${url}`);
-  return res.json();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(20000) });
+    if (res.ok) return res.json();
+    // 限流 / GitHub 侧 5xx 重试一次；4xx（除了 429）直接失败，不浪费时间
+    const retryable = res.status === 429 || res.status >= 500;
+    if (!retryable || attempt === 1) throw new Error(`GitHub API ${res.status} ${url}`);
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  throw new Error(`GitHub API 请求失败：${url}`);
 }
 
 async function latest(repo) {
@@ -62,17 +68,33 @@ function output(name, value) {
 function semver(tag) { return /^(\d+)\.(\d+)/.exec(String(tag).replace(/^v/, '')); }
 
 const results = [];
+const failures = [];
 for (const key of ['jackotom', 'zfdang']) {
   const entry = lock[key];
-  const now = await latest(entry.repo);
-  const diff = await compare(entry.repo, entry.tag, now.tag, lock.watchPaths || []);
-  results.push({ key, entry, now, diff, changed: entry.tag !== now.tag || entry.sha !== now.sha });
-  console.log(`[check] ${key.padEnd(9)} ${entry.tag} -> ${now.tag} ${entry.tag === now.tag ? '(无变化)' : '(有更新)'}`);
-  console.log(`         变更文件 ${diff.total} 个，其中我们关注的: ${diff.watched.join(', ') || '无'}`);
+  try {
+    const now = await latest(entry.repo);
+    const diff = await compare(entry.repo, entry.tag, now.tag, lock.watchPaths || []);
+    results.push({ key, entry, now, diff, changed: entry.tag !== now.tag || entry.sha !== now.sha, failed: false });
+    console.log(`[check] ${key.padEnd(9)} ${entry.tag} -> ${now.tag} ${entry.tag === now.tag ? '(无变化)' : '(有更新)'}`);
+    console.log(`         变更文件 ${diff.total} 个，其中我们关注的: ${diff.watched.join(', ') || '无'}`);
+  } catch (error) {
+    // 单个上游查询失败（限流/网络）不应拖垮另一个，也不该把 lock 写成空值
+    failures.push(`${key}: ${error.message}`);
+    results.push({
+      key, entry,
+      now: { tag: entry.tag, sha: entry.sha, publishedAt: entry.publishedAt || '', url: '' },
+      diff: { total: -1, watched: [], all: [], error: error.message },
+      changed: false, failed: true,
+    });
+    console.log(`[check] ${key.padEnd(9)} 查询失败：${error.message}（保持锁定版本 ${entry.tag}）`);
+  }
 }
 
 const changed = results.some(r => r.changed);
-const summary = results.map(r => `${r.key}:${r.entry.tag}->${r.now.tag}`).join(' / ');
+const checkFailed = failures.length > 0;
+const summary = results
+  .map(r => r.failed ? `${r.key}:${r.entry.tag}->查询失败` : `${r.key}:${r.entry.tag}->${r.now.tag}`)
+  .join(' / ');
 
 // 生成 PR 正文：列出两个上游的变更、重点文件、以及合并后会发生什么
 const lines = [
@@ -82,6 +104,13 @@ const lines = [
   '',
 ];
 for (const r of results) {
+  if (r.failed) {
+    lines.push(`### ${r.entry.repo}：⚠️ 查询失败，保持 \`${r.entry.tag}\``);
+    lines.push(`- 原因：${r.diff.error}`);
+    lines.push('- 本次不修改该上游的锁定版本，下次运行会自动重试。');
+    lines.push('');
+    continue;
+  }
   lines.push(`### ${r.entry.repo}：\`${r.entry.tag}\` → \`${r.now.tag}\``);
   lines.push(`- commit: \`${r.now.sha.slice(0, 12)}\`，发布 ${r.now.publishedAt}`);
   lines.push(`- 发行页：${r.now.url}`);
@@ -110,6 +139,7 @@ fs.writeFileSync(path.join(ROOT, '.cache', 'pr-body.md'), lines.join('\n'));
 
 if (WRITE) {
   for (const r of results) {
+    if (r.failed) continue; // 查询失败的库保持原锁定值，不用旧值/空值覆盖
     lock[r.key].tag = r.now.tag;
     lock[r.key].sha = r.now.sha;
     lock[r.key].publishedAt = r.now.publishedAt;
@@ -123,4 +153,6 @@ output('changed', changed ? 'true' : 'false');
 output('summary', summary);
 output('jackotom_tag', results[0].now.tag);
 output('zfdang_tag', results[1].now.tag);
-console.log(`[check] changed=${changed} summary=${summary}`);
+output('check_failed', checkFailed ? 'true' : 'false');
+output('failed_repos', failures.join(' | ') || 'none');
+console.log(`[check] changed=${changed} check_failed=${checkFailed} summary=${summary}`);
