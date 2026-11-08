@@ -104,6 +104,7 @@ if (requireFrontend) {
     check('桥接方法数 >= 80', invokes >= 80, `${invokes} 个`);
     check('桥接启用 hgop 播放', bridge.includes('/hgop/stream/'));
     check('桥接处理下一集预热', bridge.includes('next_vid'));
+    check('桥接预热后续多集', bridge.includes('next_vids') && bridge.includes('upcoming.length < 3'));
     check('桥接语法', syntax('app/dist-react/bridge.js') === null);
   }
 } else {
@@ -122,6 +123,21 @@ if (exists('server/index.js')) {
     && srv.includes('global.gc(); global.gc();'));
   check('GC 门槛已从 80MB 下调', srv.includes('before < 40 * MBYTES') && !srv.includes('before < 80 * MBYTES'));
   check('health 暴露 idle 状态', srv.includes('idle: idleSnapshot()'));
+}
+
+// 8. 连播预热（换集秒开：修掉「只预热 1 集 + 后一个被丢弃」与 90s TTL 过期）
+if (exists('server/index.js')) {
+  const srv = read('server/index.js');
+  check('播放计划 TTL 放宽且可配置',
+    srv.includes('HONGGUO_HGOP_PLAN_TTL_MIN') && srv.includes('PLAN_TTL_MS')
+    && !srv.includes('Date.now() + 90000'));
+  check('连播预热深度可配置/可禁用', srv.includes('HONGGUO_HGOP_WARM_DEPTH'));
+  check('预热队列化（串行但不丢弃）',
+    srv.includes('const warmQueue = []') && srv.includes('function runWarmQueue()')
+    && !srv.includes('hgopWarming.size >= 1'));
+  check('预热跳过条件检查计划有效期', srv.includes('function planUsable(') && srv.includes('expires > Date.now() + 30000'));
+  check('播放地址读取后续多集', srv.includes('req.query.next_vids') && srv.includes('warmList'));
+  check('health 暴露预热队列与 TTL', srv.includes('warmQueue: warmQueue.length') && srv.includes('planTtlMinutes'));
 }
 
 console.log(notes.join('\n'));

@@ -153,7 +153,16 @@ ${eventLines.join('\n')}
     var vids = hgopSeries.get(String(payload.seriesId));
     if (vids) {
       var index = vids.indexOf(String(payload.vid));
-      if (index >= 0 && index + 1 < vids.length) params.push('next_vid=' + encodeURIComponent(vids[index + 1]));
+      if (index >= 0) {
+        // 把后续 3 集一起带给服务端：连播时逐集命中已构建好的分片计划。
+        // 只带下一集的话，第 3 集必然撞上 1~2s 的冷启动（拉 moov + 注册设备）。
+        var upcoming = [];
+        for (var i = index + 1; i < vids.length && upcoming.length < 3; i++) upcoming.push(String(vids[i]));
+        if (upcoming.length) {
+          params.push('next_vid=' + encodeURIComponent(upcoming[0]));
+          if (upcoming.length > 1) params.push('next_vids=' + encodeURIComponent(upcoming.slice(1).join(',')));
+        }
+      }
     }
     var url = '/hgop/stream/' + encodeURIComponent(payload.vid) + '?' + params.join('&');
     return { success: true, url: absolutize(url), streamId: 'hgop:' + payload.vid,

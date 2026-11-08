@@ -267,6 +267,16 @@ async function serveStatic(req, res, pathname) {
  * xifan / hema / custom 等自定义源（vid 非纯数字）仍由原 IPC + protocol.handle 链路处理。
  */
 const HGOP_ENABLED = process.env.HONGGUO_HGOP !== '0';
+// 播放计划的存活时间。上游默认只有 90s，而一集短剧常看 1~3 分钟，预热好的计划
+// 往往在切集之前就过期，于是重新拉 moov + 重新注册播放设备（冷启动 1~2s）。
+// 计划本身很小（线上 5 个约 3.2MB，上限 12MB），放宽 TTL 几乎不增加常驻内存，
+// 回收仍由 maxPlanCount / maxPlanBytes 与空闲降级负责。
+const PLAN_TTL_MS = Math.min(60, Math.max(2,
+  Number(process.env.HONGGUO_HGOP_PLAN_TTL_MIN || 10) || 10)) * 60 * 1000;
+// 连播预热深度：每集开播后提前备好后续几集的分片计划。
+// 0 = 完全禁用预热，1 = 旧行为（只预热下一集），默认 3 集。
+const WARM_DEPTH = Math.min(4, Math.max(0,
+  Number(process.env.HONGGUO_HGOP_WARM_DEPTH ?? 3) || 0));
 let hgop = null;
 if (HGOP_ENABLED) {
   try {
@@ -293,22 +303,24 @@ if (HGOP_ENABLED) {
       const key = `${args[0]}:${args[1]}`;
       const cached = hgop.plans.get(key);
       if (cached?.expires > Date.now()) {
-        cached.expires = Date.now() + 90000;
+        cached.expires = Date.now() + PLAN_TTL_MS;
         hgop.plans.delete(key);
         hgop.plans.set(key, cached);
         return Promise.resolve(cached.plan);
       }
       if (planFlights.has(key)) return planFlights.get(key);
       const pending = rawGetPlan(...args).then(plan => {
+        // 上游写入 plans 时用的是 90s TTL，这里统一续到我们配置的时长；
+        // planFlights 命中/空闲淘汰都读同一个 expires，行为保持一致。
         for (const item of hgop.plans.values()) {
-          if (item.plan === plan) { item.expires = Date.now() + 90000; break; }
+          if (item.plan === plan) { item.expires = Date.now() + PLAN_TTL_MS; break; }
         }
         return plan;
       }).finally(() => planFlights.delete(key));
       planFlights.set(key, pending);
       return pending;
     };
-    log(`[hgop] 635 播放内核就绪：缓存 ${Math.round(hgop.maxCacheBytes / MB)}MB / 计划 ${Math.round(hgop.maxPlanBytes / MB)}MB / 最多 ${hgop.maxPlanCount} 个`);
+    log(`[hgop] 635 播放内核就绪：缓存 ${Math.round(hgop.maxCacheBytes / MB)}MB / 计划 ${Math.round(hgop.maxPlanBytes / MB)}MB / 最多 ${hgop.maxPlanCount} 个 / TTL ${Math.round(PLAN_TTL_MS / 60000)} 分钟 / 连播预热 ${WARM_DEPTH} 集`);
   } catch (error) {
     console.error('[hgop] 播放内核加载失败，自动回退原 IPC 播放链路:', error);
     hgop = null;
@@ -330,10 +342,22 @@ async function hgopStream(req, res, vid) {
   req.query = hgopQuery(req);
   // 桥接层在播放地址上附带了下一集 vid：稍延迟后预热其分片计划，切集时直接命中缓存。
   // 延迟 800ms 是为了不与当前集的首片下载抢带宽，保证首播速度。
-  const nextVid = req.query.next_vid;
-  if (nextVid && /^\d{1,30}$/.test(nextVid)) {
+  // 前端在播放地址上附带后续 3 集 vid：入队串行预热，切集时直接命中分片计划。
+  // 首个任务延迟 800ms，避免与当前集首片下载抢带宽；其余由队列依次接上。
+  // 首个任务把后续 vid 一并传给 App 接口批量取址，后面的计划构建会快很多。
+  const warmList = [];
+  const pushVid = value => {
+    const v = String(value || '').trim();
+    if (/^\d{1,30}$/.test(v) && !warmList.includes(v)) warmList.push(v);
+  };
+  pushVid(req.query.next_vid);
+  for (const v of String(req.query.next_vids || '').split(',')) pushVid(v);
+  if (WARM_DEPTH > 0 && warmList.length) {
     const nextQuality = ['auto', '720p', '1080p'].includes(req.query.quality) ? req.query.quality : 'auto';
-    setTimeout(() => hgopWarm(nextVid, nextQuality, []), 800).unref?.();
+    const jobs = warmList.slice(0, WARM_DEPTH);
+    setTimeout(() => {
+      jobs.forEach((vid, i) => hgopWarm(vid, nextQuality, i === 0 ? jobs.slice(1, 4) : []));
+    }, 800).unref?.();
   }
   try { await hgop.handleStream(req, res, vid); }
   catch (error) { log(`[hgop] stream ${vid} 异常:`, error?.message || error); if (!res.writableEnded) res.destroy(); }
@@ -342,19 +366,50 @@ async function hgopStream(req, res, vid) {
 /**
  * 上游 prefetch() 会先延迟 4 秒，且在 activeStreams > 0（Web 端播放流常驻）时直接放弃，
  * 等于预加载永不执行。这里改为直接预热分片计划缓存：切集时 getStreamingPlan 命中即秒开。
- * 同时只允许 1 个预热任务：每个计划构建期间会持有 moov 元数据与数万个样本对象，
- * armv7 上并发构建会让内存峰值翻倍，串行预热仍远快于用户看完一集的时间。
+ *
+ * 严格串行但「不丢弃」：每个计划构建期间会持有 moov 元数据与数万个样本对象，
+ * armv7 上并发构建会让内存峰值翻倍。旧实现用 `size >= 1` 直接 return，连播时后一个
+ * 预热请求被静默丢掉，第 3 集必然冷启动；改成 FIFO 队列后同一时刻仍只跑 1 个，
+ * 但后续集会排队补上，总耗时远短于一集的观看时间。
  */
 const hgopWarming = new Set();
+const warmQueue = [];
+let warmActive = false;
+
+function planUsable(key) {
+  const item = hgop?.plans.get(key);
+  // 留 30s 余量：即将过期的计划也要重新预热，否则切集时刚好撞上重建
+  return !!item && item.expires > Date.now() + 30000;
+}
+
+function runWarmQueue() {
+  if (warmActive || !hgop) return;
+  const job = warmQueue.shift();
+  if (!job) return;
+  if (planUsable(job.key) || hgopWarming.has(job.key)) {
+    setTimeout(runWarmQueue, 0).unref?.();
+    return;
+  }
+  warmActive = true;
+  hgopWarming.add(job.key);
+  const controller = new AbortController();
+  hgop.getStreamingPlan(job.vid, job.quality, controller.signal, 45000, job.nextVids)
+    .then(() => log(`[hgop] 预热完成 ${job.key}（队列余 ${warmQueue.length}）`))
+    .catch(error => log(`[hgop] 预热失败 ${job.key}:`, error?.message || error))
+    .finally(() => {
+      hgopWarming.delete(job.key);
+      warmActive = false;
+      setTimeout(runWarmQueue, 0).unref?.();
+    });
+}
+
 function hgopWarm(vid, quality, nextVids) {
   const key = `${vid}:${quality}`;
-  if (hgop.plans.has(key) || hgopWarming.has(key) || hgopWarming.size >= 1) return;
-  hgopWarming.add(key);
-  const controller = new AbortController();
-  hgop.getStreamingPlan(vid, quality, controller.signal, 45000, nextVids)
-    .then(() => log(`[hgop] 预热完成 ${key}`))
-    .catch(error => log(`[hgop] 预热失败 ${key}:`, error?.message || error))
-    .finally(() => hgopWarming.delete(key));
+  if (planUsable(key) || hgopWarming.has(key)) return;
+  if (warmQueue.some(job => job.key === key)) return;
+  if (warmQueue.length >= 6) return; // 异常情况下不无限堆积
+  warmQueue.push({ vid, quality, key, nextVids: nextVids || [] });
+  runWarmQueue();
 }
 
 function hgopPrefetch(req, res, vid) {
@@ -390,7 +445,9 @@ function hgopSnapshot() {
   return {
     plans: hgop.plans.size, planMB: mb(planBytes), planLimitMB: mb(hgop.maxPlanBytes),
     cache: hgop.cache.size, cacheMB: mb(cacheBytes), cacheLimitMB: mb(hgop.maxCacheBytes),
-    warming: hgopWarming.size, activeStreams: hgop.activeStreams,
+    warming: hgopWarming.size, warmQueue: warmQueue.length,
+    planTtlMinutes: Math.round(PLAN_TTL_MS / 60000), warmDepth: WARM_DEPTH,
+    activeStreams: hgop.activeStreams,
     inFlight: hgop.inFlight.size, pending: hgop.queue.length,
   };
 }
@@ -426,7 +483,7 @@ let lastDropCount = 0;
 let lastSleepRssMB = 0;
 
 function isBusy() {
-  return !!(hgop && (hgop.activeStreams > 0 || hgopWarming.size > 0
+  return !!(hgop && (hgop.activeStreams > 0 || hgopWarming.size > 0 || warmQueue.length > 0
     || (hgop.inFlight && hgop.inFlight.size > 0)
     || (hgop.waitingStreams && hgop.waitingStreams.length > 0)));
 }
@@ -488,7 +545,8 @@ function evaluateIdle() {
 
 /**
  * 上游只在「新建计划」时淘汰 plans，播放结束后 8 个计划会一直驻留到下次播放。
- * 这里按 90s TTL 主动清掉过期计划，并对数量/字节做兜底，让空闲内存真正回落。
+ * 这里按 getStreamingPlan 包装器统一设置的 expires（默认 10 分钟，见 PLAN_TTL_MS）
+ * 主动清掉过期计划，并对数量/字节做兜底，让空闲内存真正回落。
  */
 function pruneHgopCaches() {
   if (!hgop) return 0;

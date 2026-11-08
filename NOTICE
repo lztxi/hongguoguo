@@ -29,9 +29,10 @@ NOTICE —— 来源、许可证与修改说明
                           webContents.send → SSE，protocol.handle → HTTP Range。
 - server/index.js         HTTP / SSE / Range 服务；/hgop/stream 与 /hgop/prefetch 路由；
                           播放计划并发合并、保活、缓存管家、温和 GC、内存诊断接口；
-                          空闲降级（心跳/SSE 不计入活跃、清缓存 + full GC、无感唤醒）。
+                          空闲降级（心跳/SSE 不计入活跃、清缓存 + full GC、无感唤醒）；
+                          连播预热队列（后续 3 集、串行不丢弃、计划 TTL 10 分钟）。
 - web/gen-bridge.mjs      从上游 preload.js 自动生成 window.electronAPI 浏览器桥接，
-                          并把纯数字 vid 的播放切到 hgop 内核。
+                          并把纯数字 vid 的播放切到 hgop 内核，播放地址附带后续 3 集 vid。
 - web/web-compat.js       非安全上下文(UUID/clipboard)补丁与 HEVC 解码能力探测。
 - web/sidebar-collapse.js 侧边栏收起增强：图标态 / 手动切换 / 自动收起 / 偏好持久化，
                           纯运行时 DOM+CSS 注入，不修改上游 React 源码。

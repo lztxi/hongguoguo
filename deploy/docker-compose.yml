@@ -22,6 +22,10 @@ services:
       HONGGUO_IDLE_SLEEP_MINUTES: "${IDLE_SLEEP_MINUTES:-30}"
       # 设为 0 可一键禁用空闲降级，回到旧行为
       HONGGUO_IDLE_SLEEP: "${IDLE_SLEEP:-1}"
+      # 连播预热：提前备好后续 3 集的播放计划；1=旧行为，0=禁用
+      HONGGUO_HGOP_WARM_DEPTH: "${HONGGUO_HGOP_WARM_DEPTH:-3}"
+      # 计划存活 10 分钟，避免一集没看完预热就过期
+      HONGGUO_HGOP_PLAN_TTL_MIN: "${HONGGUO_HGOP_PLAN_TTL_MIN:-10}"
     volumes:
       # 设置 / 下载任务 / 观看历史 / 账号会话 / 已下载视频 —— 升级绝不覆盖
       - ./data:/app/data
