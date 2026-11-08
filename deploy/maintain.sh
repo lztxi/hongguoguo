@@ -45,6 +45,12 @@ case "$DECISION" in
   *) echo "保持运行，本次不重启"; exit 0 ;;
 esac
 
+# DRY_RUN=1 ./maintain.sh 只演练判定，不真的重启，方便部署后冒烟验证。
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  echo "DRY_RUN=1：判定通过，仅演练，不执行重启"
+  exit 0
+fi
+
 echo "==> docker compose restart hongguo-web"
 docker compose restart hongguo-web
 
