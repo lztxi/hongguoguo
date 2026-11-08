@@ -38,9 +38,11 @@ const out = path.join(APP, 'dist-react');
 // vite build 会清空 outDir，兼容引导脚本与注入必须在 build 之后重建。
 // 用外部脚本而非内联脚本：首页 CSP 的 script-src 没有 'unsafe-inline'。
 fs.copyFileSync(path.join(ROOT, 'web', 'web-compat.js'), path.join(out, 'web-compat.js'));
+fs.copyFileSync(path.join(ROOT, 'web', 'sidebar-collapse.js'), path.join(out, 'sidebar-collapse.js'));
 
 const htmlPath = path.join(out, 'index.html');
 let html = fs.readFileSync(htmlPath, 'utf8');
+let dirty = false;
 if (!html.includes('web-compat.js')) {
   const boot = '    <script src="./web-compat.js"></script>\n';
   if (html.includes('src="./bridge.js"')) {
@@ -48,8 +50,16 @@ if (!html.includes('web-compat.js')) {
   } else {
     html = html.replace('</head>', boot + '  </head>');
   }
-  fs.writeFileSync(htmlPath, html);
+  dirty = true;
 }
+if (!html.includes('sidebar-collapse.js')) {
+  const tag = '    <script src="./sidebar-collapse.js"></script>\n';
+  const bridge = html.match(/ *<script src="\.\/bridge\.js"><\/script>/);
+  if (bridge) html = html.replace(bridge[0], bridge[0] + '\n' + tag.replace(/\n$/, ''));
+  else html = html.replace('</head>', tag + '  </head>');
+  dirty = true;
+}
+if (dirty) fs.writeFileSync(htmlPath, html);
 
 const files = fs.readdirSync(out);
 console.log(`[build] 完成：${out}`);

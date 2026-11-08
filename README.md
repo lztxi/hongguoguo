@@ -37,6 +37,7 @@ upstream.lock.json  ──锁定──>  两个上游的 tag + commit sha
 - `overlay/web/gen-bridge.mjs` —— 每次构建都从**新版** `preload.js` 重新生成 `bridge.js`，
   上游新增/改名 IPC 方法会自动跟上（方法数异常下降会触发断言）；
 - `app/dist-react/index.html` 的脚本注入也是每次构建重新做的，不是改过的静态文件；
+- `overlay/web/sidebar-collapse.js` —— 独立运行时增强层，每次构建随兼容脚本一起注入；
 - `hgop/` 源文件每次从上游重新拉取，只重放 `patches.json` 的两处补丁；
   上游若改动被锚定的代码，同步脚本**报错停止**，提示人工合并，绝不覆盖。
 
@@ -52,6 +53,18 @@ scripts/unzip.py            跨平台解压 codeload 归档
 .github/workflows/          check-upstream / verify / build-image
 deploy/                     玩客云侧 compose + install / upgrade / rollback
 ```
+
+## Web 版增强：侧边栏收起
+
+`overlay/web/sidebar-collapse.js` 是纯运行时增强层（DOM + CSS 注入，**不改任何上游源码**）：
+
+- 侧栏底部有「收起 / 展开」按钮和「A」自动开关；
+- **自动模式（默认）**：窗口宽度 < 1200px 或进入播放页时自动收起，离开后自动展开；
+- **手动模式**：点收起按钮即锁定为手动，刷新后仍保持；再点「A」回到自动；
+- 快捷键 `Alt+S` 快速切换；收起后侧栏 62px 只剩居中图标，鼠标悬停显示名称；
+- 偏好存 `localStorage['hongguo:sidebar-mode']`（`auto` / `expanded` / `collapsed`），多标签页同步。
+
+由 `build-frontend.mjs` 每次构建注入 `index.html`，升级上游不会丢。
 
 ## 首次使用
 

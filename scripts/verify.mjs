@@ -83,11 +83,20 @@ if (requireFrontend) {
   check('dist-react/index.html', exists('app/dist-react/index.html'));
   check('dist-react/bridge.js', exists('app/dist-react/bridge.js'));
   check('dist-react/web-compat.js', exists('app/dist-react/web-compat.js'));
+  check('dist-react/sidebar-collapse.js', exists('app/dist-react/sidebar-collapse.js'));
   if (exists('app/dist-react/index.html')) {
     const html = read('app/dist-react/index.html');
     check('index.html 注入 bridge.js', html.includes('./bridge.js'));
     check('index.html 注入 web-compat.js', html.includes('./web-compat.js'));
+    check('index.html 注入 sidebar-collapse.js', html.includes('./sidebar-collapse.js'));
     check('无内联脚本（CSP）', !/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i.test(html));
+  }
+  if (exists('app/dist-react/sidebar-collapse.js')) {
+    const sc = read('app/dist-react/sidebar-collapse.js');
+    check('侧栏收起语法', syntax('app/dist-react/sidebar-collapse.js') === null);
+    check('侧栏收起支持自动模式', sc.includes("'auto'") && sc.includes('player-focused'));
+    check('侧栏收起支持手动模式', sc.includes("'expanded'") && sc.includes("'collapsed'"));
+    check('侧栏收起持久化偏好', sc.includes('hongguo:sidebar-mode'));
   }
   if (exists('app/dist-react/bridge.js')) {
     const bridge = read('app/dist-react/bridge.js');
