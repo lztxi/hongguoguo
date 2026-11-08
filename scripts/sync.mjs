@@ -106,7 +106,15 @@ function gitRevision() {
 }
 
 // ------------------------------------------------------------------ 1. 清理
-fs.rmSync(BUILD, { recursive: true, force: true });
+try {
+  fs.rmSync(BUILD, { recursive: true, force: true });
+} catch (error) {
+  // 某些桌面环境会把 Node 的递归删除代理到系统回收站，构建上下文较大时可能超时。
+  // 这时把旧目录改名让路即可，重新生成的 build/ 内容完全一致。
+  const stale = `${BUILD}.stale-${Date.now()}`;
+  fs.renameSync(BUILD, stale);
+  log(`旧 build/ 无法直接删除，已改名为 ${path.basename(stale)}（可手动清理）`);
+}
 fs.mkdirSync(BUILD, { recursive: true });
 fs.mkdirSync(CACHE, { recursive: true });
 

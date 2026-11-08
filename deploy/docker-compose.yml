@@ -26,6 +26,12 @@ services:
       HONGGUO_HGOP_WARM_DEPTH: "${HONGGUO_HGOP_WARM_DEPTH:-3}"
       # 计划存活 10 分钟，避免一集没看完预热就过期
       HONGGUO_HGOP_PLAN_TTL_MIN: "${HONGGUO_HGOP_PLAN_TTL_MIN:-10}"
+      # 首片预缓冲：每集提前备好 1MB 已解密开头数据，总量封顶 4MB；MB 设 0 禁用
+      HONGGUO_HGOP_PREBUF_MB: "${HONGGUO_HGOP_PREBUF_MB:-1}"
+      HONGGUO_HGOP_PREBUF_LIMIT_MB: "${HONGGUO_HGOP_PREBUF_LIMIT_MB:-4}"
+      # 预热避让：首片稳定后再启动预热，不抢首播带宽；DELAY 设 0 回到立刻预热
+      HONGGUO_HGOP_WARM_DELAY_MS: "${HONGGUO_HGOP_WARM_DELAY_MS:-2000}"
+      HONGGUO_HGOP_WARM_TRIGGER_KB: "${HONGGUO_HGOP_WARM_TRIGGER_KB:-512}"
     volumes:
       # 设置 / 下载任务 / 观看历史 / 账号会话 / 已下载视频 —— 升级绝不覆盖
       - ./data:/app/data

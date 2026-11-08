@@ -277,6 +277,22 @@ const PLAN_TTL_MS = Math.min(60, Math.max(2,
 // 0 = 完全禁用预热，1 = 旧行为（只预热下一集），默认 3 集。
 const WARM_DEPTH = Math.min(4, Math.max(0,
   Number(process.env.HONGGUO_HGOP_WARM_DEPTH ?? 3) || 0));
+// ③ 预热避让：旧实现固定开播后 800ms 就启动预热，而那段时间正是当前集首片在
+// 缓冲（armv7 上还要同时做 CENC 解密），预热的设备注册 / 取址 / 解析 moov 会
+// 直接抢带宽和 CPU，反而让换集那一下更顿。改为「首片已稳定推送」之后再启动。
+const WARM_TRIGGER_BYTES = Math.min(4096, Math.max(64,
+  Number(process.env.HONGGUO_HGOP_WARM_TRIGGER_KB || 512) || 512)) * 1024;
+const WARM_MIN_DELAY_MS = Math.min(15000, Math.max(0,
+  Number(process.env.HONGGUO_HGOP_WARM_DELAY_MS ?? 2000) || 0));
+const WARM_FALLBACK_MS = 8000;
+// ① 首片预缓冲：只缓存播放计划时，切集虽省了取址，浏览器仍要等服务端向上游
+// 拉 mdat 的前几个 512KB 分片并实时解密。这里在预热阶段就把下一集开头若干 MB
+// 「已解密」数据备好，切集时由 plan.read 直接吐出，才是真正的秒开。
+// 0 = 禁用；默认每集 1MB、总量封顶 4MB（相对约 52MB 常驻 RSS 可忽略）。
+const PREBUF_BYTES = Math.min(2, Math.max(0,
+  Number(process.env.HONGGUO_HGOP_PREBUF_MB ?? 1) || 0)) * 1024 * 1024;
+const PREBUF_LIMIT_BYTES = Math.min(12, Math.max(1,
+  Number(process.env.HONGGUO_HGOP_PREBUF_LIMIT_MB || 4) || 4)) * 1024 * 1024;
 let hgop = null;
 if (HGOP_ENABLED) {
   try {
@@ -310,6 +326,7 @@ if (HGOP_ENABLED) {
       }
       if (planFlights.has(key)) return planFlights.get(key);
       const pending = rawGetPlan(...args).then(plan => {
+        attachPrebuffer(plan, key);
         // 上游写入 plans 时用的是 90s TTL，这里统一续到我们配置的时长；
         // planFlights 命中/空闲淘汰都读同一个 expires，行为保持一致。
         for (const item of hgop.plans.values()) {
@@ -320,7 +337,7 @@ if (HGOP_ENABLED) {
       planFlights.set(key, pending);
       return pending;
     };
-    log(`[hgop] 635 播放内核就绪：缓存 ${Math.round(hgop.maxCacheBytes / MB)}MB / 计划 ${Math.round(hgop.maxPlanBytes / MB)}MB / 最多 ${hgop.maxPlanCount} 个 / TTL ${Math.round(PLAN_TTL_MS / 60000)} 分钟 / 连播预热 ${WARM_DEPTH} 集`);
+    log(`[hgop] 635 播放内核就绪：缓存 ${Math.round(hgop.maxCacheBytes / MB)}MB / 计划 ${Math.round(hgop.maxPlanBytes / MB)}MB / 最多 ${hgop.maxPlanCount} 个 / TTL ${Math.round(PLAN_TTL_MS / 60000)} 分钟 / 连播预热 ${WARM_DEPTH} 集 / 首片预缓冲 ${Math.round(PREBUF_BYTES / MB)}MB×${Math.round(PREBUF_LIMIT_BYTES / MB)}MB 上限 / 预热避让 ${WARM_MIN_DELAY_MS}ms+${Math.round(WARM_TRIGGER_BYTES / 1024)}KB`);
   } catch (error) {
     console.error('[hgop] 播放内核加载失败，自动回退原 IPC 播放链路:', error);
     hgop = null;
@@ -355,12 +372,128 @@ async function hgopStream(req, res, vid) {
   if (WARM_DEPTH > 0 && warmList.length) {
     const nextQuality = ['auto', '720p', '1080p'].includes(req.query.quality) ? req.query.quality : 'auto';
     const jobs = warmList.slice(0, WARM_DEPTH);
-    setTimeout(() => {
-      jobs.forEach((vid, i) => hgopWarm(vid, nextQuality, i === 0 ? jobs.slice(1, 4) : []));
-    }, 800).unref?.();
+    const t0 = Date.now();
+    let fired = false, scheduled = false, written = 0;
+    const fire = () => {
+      if (fired) return;
+      fired = true;
+      clearTimeout(fallback);
+      // 每个任务都带上后续 vid，让上游有机会一次批量取址，减少重复的设备注册
+      jobs.forEach((v, i) => hgopWarm(v, nextQuality, jobs.slice(i + 1, i + 4)));
+      log(`[hgop] 预热启动：开播后 ${Date.now() - t0}ms / 已推送 ${Math.round(written / 1024)}KB / ${jobs.length} 集`);
+    };
+    const fallback = setTimeout(fire, WARM_FALLBACK_MS);
+    fallback.unref?.();
+    // 等当前集首片真正推给浏览器之后再开始预热，别再和首播抢 CPU / 带宽。
+    const originalWrite = res.write;
+    res.write = function (chunk, ...rest) {
+      const result = originalWrite.call(this, chunk, ...rest);
+      if (!fired && !scheduled && chunk && typeof chunk !== 'function') {
+        written += typeof chunk === 'string' ? Buffer.byteLength(chunk) : (chunk.length || 0);
+        if (written >= WARM_TRIGGER_BYTES) {
+          scheduled = true;
+          const wait = Math.max(200, WARM_MIN_DELAY_MS - (Date.now() - t0));
+          setTimeout(fire, wait).unref?.();
+        }
+      }
+      return result;
+    };
   }
   try { await hgop.handleStream(req, res, vid); }
   catch (error) { log(`[hgop] stream ${vid} 异常:`, error?.message || error); if (!res.writableEnded) res.destroy(); }
+}
+
+// ------------------------------------------------------- ① 下一集首片预缓冲
+/**
+ * 不改上游 streamService / rangeMedia 源码：给构建好的 plan 换一层 read 包装。
+ * handleStream 照常 writeHead(206) + pipeline(plan.read(start,end))，包装后的
+ * 生成器先从内存吐出已解密的开头字节，剩余区间再交给原始生成器；产出字节数
+ * 严格等于 end-start+1，Content-Range / Content-Length 语义不变。
+ */
+const RAW_READ = Symbol('hgopRawRead');
+const prebuf = new Map(); // key -> { data, expires, hits }
+let prebufFilled = 0, prebufHits = 0, prebufFailures = 0;
+
+function prebufTotalBytes() {
+  let total = 0;
+  for (const item of prebuf.values()) total += item.data.length;
+  return total;
+}
+
+function trimPrebuf() {
+  const now = Date.now();
+  for (const [key, item] of prebuf) if (item.expires <= now) prebuf.delete(key);
+  let total = prebufTotalBytes();
+  if (total <= PREBUF_LIMIT_BYTES) return;
+  for (const [key, item] of prebuf) {
+    if (prebuf.size <= 1) break;
+    prebuf.delete(key);
+    total -= item.data.length;
+    if (total <= PREBUF_LIMIT_BYTES) break;
+  }
+  if (total > PREBUF_LIMIT_BYTES) prebuf.clear();
+}
+
+function attachPrebuffer(plan, key) {
+  if (!plan || !PREBUF_BYTES || plan[RAW_READ]) return;
+  const rawRead = plan.read;
+  if (typeof rawRead !== 'function') return;
+  plan[RAW_READ] = rawRead;
+  plan.read = function (start, end, signal) {
+    const item = prebuf.get(key);
+    const from = Number(start) || 0;
+    const to = Number(end);
+    if (!item || item.expires <= Date.now() || from >= item.data.length || to < from) {
+      return rawRead.call(plan, start, end, signal);
+    }
+    const data = item.data;
+    const headEnd = Math.min(to, data.length - 1);
+    return (async function* () {
+      signal?.throwIfAborted();
+      if (from <= headEnd) {
+        item.hits++;
+        prebufHits++;
+        item.expires = Date.now() + PLAN_TTL_MS; // 命中保活，与播放计划同寿命
+        yield data.subarray(from, headEnd + 1);
+      }
+      if (to >= data.length) {
+        yield* rawRead.call(plan, Math.max(from, data.length), to, signal);
+      }
+    })();
+  };
+}
+
+/** 预热队列里串行执行：把该集开头 PREBUF_BYTES 字节提前拉好并解密。 */
+async function fillPrebuffer(plan, key, signal) {
+  if (!PREBUF_BYTES || !plan || signal?.aborted) return;
+  const current = prebuf.get(key);
+  if (current && current.expires > Date.now() + 30000) return;
+  const rawRead = plan[RAW_READ] || plan.read;
+  const want = Math.min(PREBUF_BYTES, Number(plan.size) || PREBUF_BYTES);
+  const chunks = [];
+  let got = 0;
+  const t0 = Date.now();
+  try {
+    for await (const chunk of rawRead.call(plan, 0, want - 1, signal)) {
+      if (signal?.aborted) return;
+      const copy = Buffer.from(chunk); // axios 的 Buffer 可能在后续请求里复用
+      chunks.push(copy);
+      got += copy.length;
+      if (got >= want) break;
+    }
+  } catch (error) {
+    prebufFailures++;
+    log(`[hgop] 首片预缓冲跳过 ${key}:`, error?.message || error);
+    return;
+  }
+  if (!got) return;
+  let data = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, got);
+  if (data.length > want) data = Buffer.from(data.subarray(0, want));
+  prebuf.delete(key);
+  prebuf.set(key, { data, expires: Date.now() + PLAN_TTL_MS, hits: 0 });
+  trimPrebuf();
+  prebufFilled++;
+  log(`[hgop] 首片预缓冲完成 ${key}: ${Math.round(data.length / 1024)}KB / ${Date.now() - t0}ms`);
 }
 
 /**
@@ -394,12 +527,20 @@ function runWarmQueue() {
   hgopWarming.add(job.key);
   const controller = new AbortController();
   hgop.getStreamingPlan(job.vid, job.quality, controller.signal, 45000, job.nextVids)
-    .then(() => log(`[hgop] 预热完成 ${job.key}（队列余 ${warmQueue.length}）`))
+    .then(async plan => {
+      log(`[hgop] 预热完成 ${job.key}（队列余 ${warmQueue.length}）`);
+      // 单独给首片预缓冲 8s 上限，CDN 慢节点不能把整条预热队列拖死
+      const fillSignal = typeof AbortSignal.any === 'function'
+        ? AbortSignal.any([controller.signal, AbortSignal.timeout(8000)])
+        : controller.signal;
+      await fillPrebuffer(plan, job.key, fillSignal);
+    })
     .catch(error => log(`[hgop] 预热失败 ${job.key}:`, error?.message || error))
     .finally(() => {
       hgopWarming.delete(job.key);
       warmActive = false;
-      setTimeout(runWarmQueue, 0).unref?.();
+      // 任务之间留一点空隙，避免连续 3 集预热把 armv7 的 CPU 一直占满
+      setTimeout(runWarmQueue, 250).unref?.();
     });
 }
 
@@ -447,6 +588,11 @@ function hgopSnapshot() {
     cache: hgop.cache.size, cacheMB: mb(cacheBytes), cacheLimitMB: mb(hgop.maxCacheBytes),
     warming: hgopWarming.size, warmQueue: warmQueue.length,
     planTtlMinutes: Math.round(PLAN_TTL_MS / 60000), warmDepth: WARM_DEPTH,
+    prebuf: {
+      entries: prebuf.size, mb: mb(prebufTotalBytes()), limitMB: mb(PREBUF_LIMIT_BYTES),
+      perEpisodeMB: mb(PREBUF_BYTES), filled: prebufFilled, hits: prebufHits,
+      failures: prebufFailures,
+    },
     activeStreams: hgop.activeStreams,
     inFlight: hgop.inFlight.size, pending: hgop.queue.length,
   };
@@ -520,9 +666,10 @@ function enterIdleSleep() {
   let dropped = 0;
   try {
     if (hgop) {
-      dropped = hgop.plans.size + hgop.cache.size;
+      dropped = hgop.plans.size + hgop.cache.size + prebuf.size;
       hgop.plans.clear();
       hgop.cache.clear();
+      prebuf.clear();
     }
   } catch (error) {
     log('[idle] 清缓存跳过:', error?.message || error);
@@ -566,6 +713,7 @@ function pruneHgopCaches() {
     removed++;
   }
   if (hgop.cache?.size > (hgop.maxCacheCount || 1)) hgop.pruneCache?.();
+  trimPrebuf();
   return removed;
 }
 

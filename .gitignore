@@ -1,5 +1,6 @@
 # 生成的构建上下文与缓存绝不入库
 build/
+build.stale-*/
 .cache/
 *.zip
 node_modules/

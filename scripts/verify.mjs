@@ -140,6 +140,28 @@ if (exists('server/index.js')) {
   check('health 暴露预热队列与 TTL', srv.includes('warmQueue: warmQueue.length') && srv.includes('planTtlMinutes'));
 }
 
+// 9. 首片预缓冲 + 预热避让（让「点击 → 画面」而不只是「点击 → 响应头」变快）
+if (exists('server/index.js')) {
+  const srv = read('server/index.js');
+  check('首片预缓冲可配置/可禁用', srv.includes('HONGGUO_HGOP_PREBUF_MB') && srv.includes('PREBUF_BYTES'));
+  check('预缓冲总量封顶且会淘汰', srv.includes('HONGGUO_HGOP_PREBUF_LIMIT_MB') && srv.includes('function trimPrebuf()'));
+  check('plan.read 包装保持 Range 字节数语义',
+    srv.includes('function attachPrebuffer(') && srv.includes('data.subarray(from, headEnd + 1)')
+    && srv.includes('yield* rawRead.call('));
+  check('预缓冲由预热队列串行填充', srv.includes('await fillPrebuffer(plan, job.key'));
+  check('预缓冲有超时保护', srv.includes('AbortSignal.timeout(8000)'));
+  check('预缓冲计入 health 与空闲降级',
+    srv.includes('prebuf: {') && srv.includes('prebufTotalBytes()') && srv.includes('prebuf.clear()'));
+  check('预热避让首播窗口',
+    srv.includes('HONGGUO_HGOP_WARM_DELAY_MS') && srv.includes('WARM_TRIGGER_BYTES')
+    && !srv.includes('}, 800).unref?.()'));
+  check('预热等首片实际写出后触发',
+    srv.includes('const originalWrite = res.write') && srv.includes('written >= WARM_TRIGGER_BYTES'));
+  const deployCompose = fs.readFileSync(path.join(ROOT, 'deploy', 'docker-compose.yml'), 'utf8');
+  check('部署 compose 暴露新配置',
+    deployCompose.includes('HONGGUO_HGOP_PREBUF_MB') && deployCompose.includes('HONGGUO_HGOP_WARM_DELAY_MS'));
+}
+
 console.log(notes.join('\n'));
 if (failures.length) {
   console.error('\n[verify] 失败：\n' + failures.join('\n'));
