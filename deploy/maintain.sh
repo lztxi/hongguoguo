@@ -7,8 +7,10 @@ set -eu
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$DIR"
+# 允许调用方用 HEALTH=... 临时覆盖（演练 / 排错），优先级高于 .env
+HEALTH_ARG=${HEALTH:-}
 if [ -f .env ]; then . ./.env; fi
-HEALTH=${HEALTH:-http://127.0.0.1:9636/api/health}
+HEALTH=${HEALTH_ARG:-${HEALTH:-http://127.0.0.1:9636/api/health}}
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] === 每周维护开始 ==="
 BODY=$(curl -fsS --max-time 8 "$HEALTH" 2>/dev/null || true)
@@ -31,12 +33,15 @@ sse = int(d.get("sseClients") or 0)
 idle = int(i.get("idleSeconds") or 0)
 if active > 0:
     print("SKIP 正在播放 (activeStreams=%d)" % active)
-elif sse > 0:
-    print("SKIP 有页面打开 (sseClients=%d)" % sse)
 elif idle < 600:
     print("SKIP 10 分钟内有人使用 (idle=%ds)" % idle)
+elif sse > 0 and idle < 1800:
+    print("SKIP 有页面打开且仅空闲 %ds（需满 30 分钟）" % idle)
 else:
-    print("OK 已空闲 %ds，可以重启" % idle)
+    # 后台标签页不算「正在使用」：浏览器 EventSource 会在 3s 后自动重连，
+    # 凌晨重启后被断开的只是空闲连接。若一律因 sse>0 跳过，
+    # 常年开着标签页的部署会让每周维护永远不执行。
+    print("OK 已空闲 %ds (sse=%d, SSE 自动重连)，可以重启" % (idle, sse))
 ' 2>/dev/null || echo "SKIP python3 不可用或解析失败")
 
 echo "$DECISION"
