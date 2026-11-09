@@ -1,7 +1,9 @@
 name: check-upstream
 
-# 每 3 天检查两个上游的正式发行版；有更新就自动开一个只改 lock 文件的 PR。
-# PR 会触发 verify.yml 做完整同步与兼容性校验，通过后再由人工合并 → build-image.yml 出镜像。
+# 每 3 天检查两个上游的正式发行版；另外每次往 main 推送代码时也顺带检查一次，
+# 避免「上游一天连发几版、但定时还没轮到」导致镜像里的版本号长期落后。
+# 有更新就自动开一个只改 lock 文件的 PR；PR 会触发 verify.yml 做完整同步与兼容性校验，
+# 通过后再由人工合并 → build-image.yml 出镜像。
 #
 # 关于「3 天」：GitHub Actions cron 没有「每隔 N 小时」这种相对语义，
 # day-of-month 上的 */3 是「每月 1/4/7/.../31 号」，跨月会重置（1/31 → 2/1 只隔 1 天）。
@@ -12,6 +14,11 @@ on:
   schedule:
     # UTC 00:17 = 北京时间 08:17，每 3 天一次；避开整点可降低被调度丢弃的概率
     - cron: '17 0 */3 * *'
+  push:
+    branches: [main]
+    # 升级 PR 本身只改 lock，合并后无需再跑一次检测（也能避免 PR 来回触发）
+    paths-ignore:
+      - 'upstream.lock.json'
   workflow_dispatch:
 
 permissions:

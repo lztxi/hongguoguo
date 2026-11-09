@@ -51,14 +51,35 @@ async function download(url, dest) {
 }
 
 function extract(zip, dest) {
-  fs.rmSync(dest, { recursive: true, force: true });
+  // 归档没变时复用已解压目录：某些桌面环境会把 Node 的递归删除代理到系统回收站，
+  // 源码树有数千个文件时会触发批量删除保护/超时，导致每次同步都失败。
+  const stat = fs.statSync(zip);
+  const stamp = `${stat.size}:${Math.round(stat.mtimeMs)}`;
+  const marker = path.join(dest, '.hg-extract.json');
+  try {
+    const saved = JSON.parse(fs.readFileSync(marker, 'utf8'));
+    if (saved.stamp === stamp && saved.root && fs.existsSync(saved.root)) {
+      log('复用已解压源码', path.basename(dest));
+      return saved.root;
+    }
+  } catch (_) { /* 首次解压或标记失效，按正常流程处理 */ }
+
+  try {
+    fs.rmSync(dest, { recursive: true, force: true });
+  } catch (_) {
+    const stale = `${dest}.stale-${Date.now()}`;
+    fs.renameSync(dest, stale);
+    log(`旧源码缓存无法直接删除，已改名为 ${path.basename(stale)}（可手动清理）`);
+  }
   fs.mkdirSync(dest, { recursive: true });
   const r = spawnSync(PYTHON, [path.join(ROOT, 'scripts', 'unzip.py'), zip, dest], { encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`解压失败: ${r.stderr || r.stdout}`);
-  return r.stdout.trim().split(/\r?\n/).pop();
+  const root = r.stdout.trim().split(/\r?\n/).pop();
+  fs.writeFileSync(marker, JSON.stringify({ stamp, root }) + '\n');
+  return root;
 }
 
-const SKIP_TOP = new Set(['.git', '.github', 'node_modules', 'dist', 'dist-react', '.cache']);
+const SKIP_TOP = new Set(['.git', '.github', 'node_modules', 'dist', 'dist-react', '.cache', '.hg-extract.json']);
 function copyDir(from, to, skip = SKIP_TOP) {
   fs.mkdirSync(to, { recursive: true });
   for (const entry of fs.readdirSync(from, { withFileTypes: true })) {

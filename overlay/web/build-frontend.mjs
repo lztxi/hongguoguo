@@ -39,6 +39,7 @@ const out = path.join(APP, 'dist-react');
 // 用外部脚本而非内联脚本：首页 CSP 的 script-src 没有 'unsafe-inline'。
 fs.copyFileSync(path.join(ROOT, 'web', 'web-compat.js'), path.join(out, 'web-compat.js'));
 fs.copyFileSync(path.join(ROOT, 'web', 'sidebar-collapse.js'), path.join(out, 'sidebar-collapse.js'));
+fs.copyFileSync(path.join(ROOT, 'web', 'version-badge.js'), path.join(out, 'version-badge.js'));
 
 const htmlPath = path.join(out, 'index.html');
 let html = fs.readFileSync(htmlPath, 'utf8');
@@ -56,6 +57,13 @@ if (!html.includes('sidebar-collapse.js')) {
   const tag = '    <script src="./sidebar-collapse.js"></script>\n';
   const bridge = html.match(/ *<script src="\.\/bridge\.js"><\/script>/);
   if (bridge) html = html.replace(bridge[0], bridge[0] + '\n' + tag.replace(/\n$/, ''));
+  else html = html.replace('</head>', tag + '  </head>');
+  dirty = true;
+}
+if (!html.includes('version-badge.js')) {
+  const tag = '    <script src="./version-badge.js"></script>\n';
+  const side = html.match(/ *<script src="\.\/sidebar-collapse\.js"><\/script>/);
+  if (side) html = html.replace(side[0], side[0] + '\n' + tag.replace(/\n$/, ''));
   else html = html.replace('</head>', tag + '  </head>');
   dirty = true;
 }

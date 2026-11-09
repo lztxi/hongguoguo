@@ -38,7 +38,9 @@ NOTICE —— 来源、许可证与修改说明
 - web/web-compat.js       非安全上下文(UUID/clipboard)补丁与 HEVC 解码能力探测。
 - web/sidebar-collapse.js 侧边栏收起增强：图标态 / 手动切换 / 自动收起 / 偏好持久化，
                           纯运行时 DOM+CSS 注入，不修改上游 React 源码。
-- web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本与侧栏增强注入。
+- web/version-badge.js    页面左下角版本角标：读取 /api/health 的 build 字段，
+                          显示镜像锁定的两个上游版本与定制层修订，纯运行时注入。
+- web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本、侧栏增强与版本角标注入。
 - Dockerfile / docker-compose.yml / .dockerignore   armv7 容器构建与内存约束。
 
 三、对上游文件的唯一修改

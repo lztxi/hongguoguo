@@ -50,6 +50,29 @@ jobs:
       - name: 校验
         run: node scripts/verify.mjs
 
+      # 镜像版本由 upstream.lock.json 决定。若上游已经发了新版而 lock 还没合并，
+      # 这里在构建结果里直接给出警告，避免「镜像更新了、版本号却没跟上」无人察觉。
+      - name: 上游版本落后提醒
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/check-upstream.mjs > /tmp/upstream.log 2>&1 || true
+          grep '^\[check\]' /tmp/upstream.log || true
+          if grep -q 'changed=true' /tmp/upstream.log; then
+            echo "::warning title=上游已发新版::本次镜像仍基于旧的上游版本，请合并上游升级 PR 后重新构建"
+            {
+              echo '### ⚠️ 上游已有新版本，本次镜像仍是旧上游'
+              echo ''
+              echo '```'
+              grep '^\[check\]' /tmp/upstream.log || true
+              echo '```'
+              echo '合并 `chore/upstream-bump` PR 后会自动重新构建镜像；仅执行 update.sh 不会升级上游源码。'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '### ✅ 上游版本与本次镜像一致' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: 解析版本号与镜像名
         id: ver
         run: |

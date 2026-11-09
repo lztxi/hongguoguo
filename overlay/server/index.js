@@ -670,6 +670,14 @@ function enterIdleSleep() {
       hgop.plans.clear();
       hgop.cache.clear();
       prebuf.clear();
+      // zfdang v1.11.0 起新增了渐进式分片缓存等 Map（fragmentCache 单集可达 64MB），
+      // 空闲时一并释放，避免 256MB 容器长时间挂着旧播放数据。
+      for (const timer of hgop.prefetchTimers?.values() || []) clearTimeout(timer);
+      for (const name of ['fragmentCache', 'prefetchTimers', 'quickAborts',
+                          'consumedRefreshes', 'streamControllers']) {
+        const map = hgop[name];
+        if (map && typeof map.clear === 'function') { dropped += map.size; map.clear(); }
+      }
     }
   } catch (error) {
     log('[idle] 清缓存跳过:', error?.message || error);

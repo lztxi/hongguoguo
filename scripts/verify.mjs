@@ -84,12 +84,20 @@ if (requireFrontend) {
   check('dist-react/bridge.js', exists('app/dist-react/bridge.js'));
   check('dist-react/web-compat.js', exists('app/dist-react/web-compat.js'));
   check('dist-react/sidebar-collapse.js', exists('app/dist-react/sidebar-collapse.js'));
+  check('dist-react/version-badge.js', exists('app/dist-react/version-badge.js'));
   if (exists('app/dist-react/index.html')) {
     const html = read('app/dist-react/index.html');
     check('index.html 注入 bridge.js', html.includes('./bridge.js'));
     check('index.html 注入 web-compat.js', html.includes('./web-compat.js'));
     check('index.html 注入 sidebar-collapse.js', html.includes('./sidebar-collapse.js'));
+    check('index.html 注入 version-badge.js', html.includes('./version-badge.js'));
     check('无内联脚本（CSP）', !/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i.test(html));
+  }
+  if (exists('app/dist-react/version-badge.js')) {
+    const badge = read('app/dist-react/version-badge.js');
+    check('版本角标读取 health 的上游版本', badge.includes('/api/health') && badge.includes('jackotom') && badge.includes('zfdang'));
+    check('版本角标说明上游升级机制', badge.includes('上游升级需合并升级 PR'));
+    check('版本角标语法', syntax('app/dist-react/version-badge.js') === null);
   }
   if (exists('app/dist-react/sidebar-collapse.js')) {
     const sc = read('app/dist-react/sidebar-collapse.js');
@@ -160,6 +168,29 @@ if (exists('server/index.js')) {
   const deployCompose = fs.readFileSync(path.join(ROOT, 'deploy', 'docker-compose.yml'), 'utf8');
   check('部署 compose 暴露新配置',
     deployCompose.includes('HONGGUO_HGOP_PREBUF_MB') && deployCompose.includes('HONGGUO_HGOP_WARM_DELAY_MS'));
+}
+
+// 10. 上游版本可见性 + 不再「静静落后」的检测机制
+{
+  const srv = exists('server/index.js') ? read('server/index.js') : '';
+  check('空闲降级清理新版内核的额外缓存',
+    srv.includes('fragmentCache') && srv.includes('prefetchTimers') && srv.includes('streamControllers'));
+  const badge = exists('web/version-badge.js') ? read('web/version-badge.js') : '';
+  check('版本角标读取 build 字段', badge.includes("'/api/health'") && badge.includes('build.jackotom'));
+  const fe = read('web/build-frontend.mjs');
+  check('前端构建注入版本角标',
+    fe.includes("'version-badge.js'") && fe.includes("html.includes('version-badge.js')"));
+  const checkWf = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'check-upstream.yml'), 'utf8');
+  check('每次 push 也检查上游', checkWf.includes('push:') && checkWf.includes('paths-ignore'));
+  const buildWf = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build-image.yml'), 'utf8');
+  check('出镜像时提醒上游落后',
+    buildWf.includes('上游版本落后提醒') && buildWf.includes('changed=true'));
+  const up = fs.readFileSync(path.join(ROOT, 'deploy', 'upgrade.sh'), 'utf8');
+  check('升级脚本回显上游版本',
+    up.includes('应用上游：') && up.includes('jackotom') && up.includes('zfdang'));
+  check('锁文件跟上上游',
+    LOCK.jackotom.tag === 'v6.4' && LOCK.zfdang.tag === 'v1.11.0',
+    `${LOCK.jackotom.tag} / ${LOCK.zfdang.tag}`);
 }
 
 console.log(notes.join('\n'));

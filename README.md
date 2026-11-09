@@ -21,7 +21,7 @@ Web 化改造层（Electron shim / HTTP+SSE 服务 / 浏览器桥接 / 内存优
 ```
 upstream.lock.json  ──锁定──>  两个上游的 tag + commit sha
         │
-        ├─ check-upstream.yml  每 3 天查最新发行版 → 自动开 PR（只改 lock 文件）
+        ├─ check-upstream.yml  每 3 天 + 每次 push 查最新发行版 → 自动开 PR（只改 lock）
         │
         ├─ verify.yml         PR 里重新拉源码 + 叠加 overlay + 重放补丁 + 构建前端
         │                     └─ 补丁锚点被上游改动 / preload 结构变化 → 直接失败，不静默合并
@@ -37,7 +37,8 @@ upstream.lock.json  ──锁定──>  两个上游的 tag + commit sha
 - `overlay/web/gen-bridge.mjs` —— 每次构建都从**新版** `preload.js` 重新生成 `bridge.js`，
   上游新增/改名 IPC 方法会自动跟上（方法数异常下降会触发断言）；
 - `app/dist-react/index.html` 的脚本注入也是每次构建重新做的，不是改过的静态文件；
-- `overlay/web/sidebar-collapse.js` —— 独立运行时增强层，每次构建随兼容脚本一起注入；
+- `overlay/web/sidebar-collapse.js`、`overlay/web/version-badge.js` —— 独立运行时增强层，
+  每次构建随兼容脚本一起注入（版本角标直接显示镜像锁定的两个上游版本）；
 - `hgop/` 源文件每次从上游重新拉取，只重放 `patches.json` 的两处补丁；
   上游若改动被锚定的代码，同步脚本**报错停止**，提示人工合并，绝不覆盖。
 
@@ -118,27 +119,39 @@ cd /root/hongguo-web-deploy && sh ./upgrade.sh
 
 出问题时 `sh ./rollback.sh` 回到上一版镜像。`upgrade.sh` 会在健康检查失败时自动回滚。
 
+> **镜像更新 ≠ 上游升级**：`update.sh` / `upgrade.sh` 只拉取「已经构建好」的 GHCR 镜像。
+> 镜像里打包的上游源码版本由 `upstream.lock.json` 锁定，只有合并上游升级 PR、
+> 重新跑完 `build-image` 之后才会变。所以可能出现「镜像刚更新、版本号却没变」——
+> 这是预期行为，不是漏更新。升级脚本现在会直接回显镜像里的上游版本；
+> 网页左下角的版本角标（点开看详情）也能随时确认。
+>
 > 当前玩客云实际部署目录是 `/root/hongguo-web`（已改成纯镜像 compose，不再本机编译），
 > 日常用 `cd /root/hongguo-web && ./update.sh`，回滚用 `./rollback.sh`；
 > 上面 `deploy/` 的用法适用于全新机器从零部署。
 
 ### 版本基线
 
-`upstream.lock.json` 当前锁定 **jackotom v6.2 + zfdang v1.7.2**。6.2 相对 6.1 只改了
-观看记录续作判断、切集画面交接、转码排队回调与版本号；v1.7.2 相对 1.7.1 只有
-README 与一篇架构文档，**播放内核代码零改动**。已用 `scripts/sync.mjs` + `verify.mjs`
-完整验证：补丁重放成功、桥接仍生成 111 个 invoke、49 项校验全通过。
-
-玩客云 9636 自 2026-11-08 起已运行基于 6.2 的 GHCR 镜像，升级只需 `./update.sh`。
+`upstream.lock.json` 当前锁定 **jackotom v6.4 + zfdang v1.11.0**（2026-11-09 升级）。
+这次跨越较大：6.2→6.4 有 153 个文件变更（`main.js` / `preload.js` 新增 interface-language
+IPC、`Player.jsx`、`bytevc2.js`），v1.7.2→v1.11.0 有 35 个（`streamService.js` 新增
+bytevc2 渐进式、并发分片、fragmentCache 等）。已用 `scripts/sync.mjs` + `verify.mjs`
+完整验证：两处内存补丁锚点仍精确命中、桥接自动生成 112 个 invoke、65 项校验全通过。
+新版 `fragmentCache` 等额外缓存已纳入空闲降级清理，避免 256MB 容器长期挂着旧数据。
 
 想临时改用别的版本：编辑 `upstream.lock.json` 的 `tag` / `sha` 后推送即可。
 `sha` 只用于构建信息追溯，实际下载用 tag；可用
-`git ls-remote https://github.com/jackotom/hongguo-drama refs/tags/v6.2` 查询。
+`git ls-remote https://github.com/jackotom/hongguo-drama refs/tags/v6.4` 查询。
 
-定时检查在 `.github/workflows/check-upstream.yml` 的 `cron`，**默认每 3 天一次**
-（`17 0 */3 * *`，UTC 00:17 = 北京 08:17）。注意 GitHub cron 的 `*/3` 是「每月
-1/4/7/… 号」的日历语义，跨月会重置；另外 GitHub 会停用连续 60 天无任何仓库活动的
-scheduled workflow，上游长期不发版时偶尔手动 Run workflow 一次即可。
+上游检测走两条路，避免「上游一天连发几版、定时还没轮到」导致版本号长期落后：
+
+1. `.github/workflows/check-upstream.yml` 的 `cron`，**默认每 3 天一次**
+   （`17 0 */3 * *`，UTC 00:17 = 北京 08:17）；
+2. **每次 push 到 main 也顺带检查一次**（只改 lock 的 PR 合并不重复触发）。
+
+另外 `build-image` 出镜像时会再比对一次上游最新版，若 lock 已落后会在构建摘要里
+给出醒目警告。注意 GitHub cron 的 `*/3` 是「每月 1/4/7/… 号」的日历语义，跨月会重置；
+GitHub 也会停用连续 60 天无任何仓库活动的 scheduled workflow，上游长期不发版时
+偶尔手动 Run workflow 一次即可。
 
 ## 连播预热（换集秒开）
 

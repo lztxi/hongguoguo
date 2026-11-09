@@ -53,6 +53,10 @@ if [ "$OK" -ne 1 ]; then
 fi
 
 echo "==> 升级成功（${STAMP}）"
-printf '%s\n' "$BODY" | head -c 800
-printf '\n'
-printf '%s  %s  %s\n' "$STAMP" "$IMAGE" "${OLD:-none}" >> upgrade.log
+# 直接回显镜像里锁定的上游版本：镜像更新只拉「已构建好的产物」，
+# 上游源码版本由自动构建库的 upstream.lock.json 决定，合并升级 PR 后重新出镜像才会变。
+UP_J=$(printf '%s' "$BODY" | tr -d '\n' | sed -n 's/.*"jackotom":{[^}]*"tag":"\([^"]*\)".*/\1/p' || true)
+UP_Z=$(printf '%s' "$BODY" | tr -d '\n' | sed -n 's/.*"zfdang":{[^}]*"tag":"\([^"]*\)".*/\1/p' || true)
+echo "==> 应用上游：${UP_J:-未知} / 播放内核：${UP_Z:-未知}"
+echo "==> 提示：单独执行本脚本不会升级上游源码，需在自动构建库合并上游升级 PR。"
+printf '%s  %s  %s  %s/%s\n' "$STAMP" "$IMAGE" "${OLD:-none}" "${UP_J:-?}" "${UP_Z:-?}" >> upgrade.log
