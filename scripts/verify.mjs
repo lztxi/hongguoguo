@@ -188,8 +188,10 @@ if (exists('server/index.js')) {
   const up = fs.readFileSync(path.join(ROOT, 'deploy', 'upgrade.sh'), 'utf8');
   check('升级脚本回显上游版本',
     up.includes('应用上游：') && up.includes('jackotom') && up.includes('zfdang'));
-  check('锁文件跟上上游',
-    LOCK.jackotom.tag === 'v6.4' && LOCK.zfdang.tag === 'v1.11.0',
+  // 不硬编码具体版本号：上游一天发好几版，锁文件每次升级都改，断言只校验格式，
+  // 「lock 与 BUILD-INFO 一致」由前面的断言负责。
+  check('锁文件版本格式有效',
+    /^v\d+/.test(LOCK.jackotom.tag) && /^v\d+/.test(LOCK.zfdang.tag),
     `${LOCK.jackotom.tag} / ${LOCK.zfdang.tag}`);
 }
 

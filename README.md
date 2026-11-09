@@ -131,12 +131,14 @@ cd /root/hongguo-web-deploy && sh ./upgrade.sh
 
 ### 版本基线
 
-`upstream.lock.json` 当前锁定 **jackotom v6.4 + zfdang v1.11.0**（2026-11-09 升级）。
+`upstream.lock.json` 当前锁定 **jackotom v6.4 + zfdang v1.11.1**（2026-11-09 升级）。
 这次跨越较大：6.2→6.4 有 153 个文件变更（`main.js` / `preload.js` 新增 interface-language
 IPC、`Player.jsx`、`bytevc2.js`），v1.7.2→v1.11.0 有 35 个（`streamService.js` 新增
-bytevc2 渐进式、并发分片、fragmentCache 等）。已用 `scripts/sync.mjs` + `verify.mjs`
-完整验证：两处内存补丁锚点仍精确命中、桥接自动生成 112 个 invoke、65 项校验全通过。
-新版 `fragmentCache` 等额外缓存已纳入空闲降级清理，避免 256MB 容器长期挂着旧数据。
+bytevc2 渐进式、并发分片、fragmentCache 等）；v1.11.1 只改了 2 个 CI 配置，内核代码零改动。
+已用 `scripts/sync.mjs` + `verify.mjs` 完整验证：两处内存补丁锚点仍精确命中、
+桥接自动生成 112 个 invoke、77 项校验全通过；并在玩客云用真实 vid 做过字节级对照
+（三种 Range 的 md5 与升级前完全一致）。新版 `fragmentCache` 等额外缓存已纳入
+空闲降级清理，避免 256MB 容器长期挂着旧数据。
 
 想临时改用别的版本：编辑 `upstream.lock.json` 的 `tag` / `sha` 后推送即可。
 `sha` 只用于构建信息追溯，实际下载用 tag；可用
