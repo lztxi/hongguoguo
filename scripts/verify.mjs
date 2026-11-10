@@ -190,6 +190,9 @@ if (exists('server/index.js')) {
   check('版本角标位置跟随侧栏而不重叠',
     badge.includes('function place()') && badge.includes('.sidebar')
     && badge.includes('badge.style.left') && badge.includes('attributeFilter'));
+  check('版本角标留在侧栏内，不压主内容区海报',
+    badge.includes('.sidebar-footer') && badge.includes('badge.style.bottom')
+    && badge.includes('shortVersion') && !badge.includes('r.right'));
   const fe = read('web/build-frontend.mjs');
   check('前端构建注入版本角标',
     fe.includes("'version-badge.js'") && fe.includes("html.includes('version-badge.js')"));
@@ -236,7 +239,8 @@ if (exists('server/index.js')) {
     badge.includes('info.upstream') && badge.includes('setInterval(refresh, POLL_MS)')
     && badge.includes("document.addEventListener('visibilitychange'"));
   check('版本角标故障时提示且恢复后还原',
-    badge.includes('data-alert') && badge.includes('红果接口繁忙') && badge.includes('label.textContent = versionLabel'));
+    badge.includes('data-alert') && badge.includes('红果接口繁忙')
+    && badge.includes('lastLabels.full') && badge.includes('label.textContent = text'));
   const compose = fs.readFileSync(path.join(ROOT, 'deploy', 'docker-compose.yml'), 'utf8');
   const envExample = fs.readFileSync(path.join(ROOT, 'deploy', '.env.example'), 'utf8');
   check('部署配置暴露容错开关',

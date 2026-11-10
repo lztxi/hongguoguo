@@ -13,9 +13,11 @@
  * - 外部脚本 + 动态 <style>，符合首页 CSP（script-src 'self' / style-src 'unsafe-inline'）；
  * - 挂在 body 下的独立元素，不侵入 React 的 #root，也不会被重渲染冲掉；
  * - 颜色继承 body，浅色/深色界面都能看清；请求失败时保留上一次状态；
- * - 位置实时跟随侧栏右边缘：写死在 left:10px 会压住侧栏底部的「收起侧栏」
- *   按钮（侧栏宽度在 214/190/164/62px 间变化，竖屏布局还会整条隐藏），
- *   因此改为测量 .sidebar 的右边界，把角标放到侧栏右侧的内容区里。
+ * - 位置约束：写死在 left:10px 会压住侧栏底部的「收起侧栏」按钮；挪到侧栏
+ *   右侧的内容区又会压住海报。最终做法是量 .sidebar 与 .sidebar-footer 的
+ *   位置，把角标固定在侧栏内部、footer 控件上方，宽度不超过侧栏 —— 既不压
+ *   按钮也不进内容区。收起态（62px）与竖屏无侧栏时自动缩成短标签，
+ *   点开详情才临时放宽，避免常驻遮挡。
  */
 (function () {
   'use strict';
@@ -23,14 +25,16 @@
   var BOX_ID = 'hg-version-badge';
   var STYLE_ID = 'hg-version-badge-css';
   var POLL_MS = 30000;
-  var GAP = 10;                 // 与侧栏右缘 / 屏幕左缘的间距
-  var MAX_W = 300;
+  var GAP = 10;                 // 与侧栏内缘 / 屏幕左缘的间距
   var badge = null;             // 角标 DOM，ready() 里赋值
-  var observedSidebar = null;   // 已绑定 ResizeObserver 的侧栏节点
-  var sidebarObserver = null;
+  var compact = false;          // 收起态 / 无侧栏：标签缩成短文本
+  var applyLabel = null;        // ready() 里赋值，place() 在紧凑态变化时重绘
+  var observedSide = null;      // 已绑定 ResizeObserver 的节点
+  var observedFooter = null;
+  var layoutObserver = null;
   var placeFrame = 0;
   var CSS = [
-    // left / max-width 的初始值只是兜底：place() 会用内联样式按侧栏宽度覆盖。
+    // left / bottom / max-width 的初始值只是兜底：place() 会用内联样式覆盖。
     '.hg-version-badge{',
     'position:fixed;left:10px;bottom:8px;z-index:9998;max-width:300px;',
     'font:11px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
@@ -39,7 +43,8 @@
     'transition:opacity .18s ease;user-select:none;box-sizing:border-box;',
     '}',
     '.hg-version-badge:hover,.hg-version-badge:focus{opacity:1;outline:none}',
-    '.hg-version-badge[data-open="1"]{opacity:1}',
+    // 详情需要宽一点才读得下，但只在用户主动点开时才允许溢出到内容区
+    '.hg-version-badge[data-open="1"]{opacity:1;max-width:300px !important}',
     '.hg-version-badge[data-alert="1"]{',
     'opacity:1;color:#e08a3c;border-color:rgba(224,138,60,.65);',
     'background:rgba(224,138,60,.12);font-weight:600;',
@@ -71,45 +76,62 @@
   }
 
   /**
-   * 侧栏底部有「收起侧栏」控件，角标固定在 left:10px 会直接盖住它。
+   * 侧栏底部有「收起侧栏」控件，主内容区左下角有海报，两边都不能压。
    * 侧栏宽度随展开 / 收起 / 窗口宽度在 214、190、164、62px 间变化，
-   * 竖屏布局（.layout-portrait）还会整条 display:none —— 所以不能写死
-   * 任何宽度，直接量 .sidebar 的右边缘最稳：侧栏可见就贴在它右侧的内容
-   * 区里，侧栏隐藏就回落到屏幕左下角。
+   * 竖屏布局（.layout-portrait）还会整条 display:none，所以不能写死偏移：
+   * 量 .sidebar 左边界与 .sidebar-footer 上沿，把角标固定在侧栏内部、
+   * footer 上方，宽度不超过侧栏；侧栏隐藏时缩成小胶囊贴屏幕左下角。
    */
   function place() {
     if (!badge) return;
     var side = document.querySelector('.sidebar');
-    var left = GAP;
-    if (side) {
-      var r = side.getBoundingClientRect();
-      var cs = window.getComputedStyle(side);
-      if (r.width > 0 && r.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden') {
-        left = Math.round(r.right) + GAP;
-      }
+    var footer = side ? side.querySelector('.sidebar-footer') : null;
+    var r = side ? side.getBoundingClientRect() : null;
+    var cs = side ? window.getComputedStyle(side) : null;
+    var visible = !!(r && r.width > 0 && r.height > 0
+      && cs && cs.display !== 'none' && cs.visibility !== 'hidden');
+
+    var left, bottom, maxW, isCompact;
+    if (visible) {
+      var fr = footer ? footer.getBoundingClientRect() : null;
+      // 底边落在 footer 上沿之上 8px：不压收起按钮，也完全留在侧栏里
+      bottom = (fr && fr.height > 0) ? Math.round(window.innerHeight - fr.top) + 8 : 110;
+      left = Math.round(r.left) + GAP;
+      maxW = Math.max(36, Math.round(r.width) - GAP * 2);
+      isCompact = r.width < 150;              // 收起态 62px
+    } else {
+      left = GAP;
+      bottom = 8;
+      maxW = 120;
+      isCompact = true;
     }
-    if (!isFinite(left)) left = GAP;
-    // 极窄视口兜底：至少给角标留 110px，别把它顶出屏幕右侧
-    left = Math.max(GAP, Math.min(left, Math.max(GAP, window.innerWidth - 110)));
-    var cap = window.innerWidth <= 640 ? 200 : MAX_W;
-    var maxW = Math.max(110, Math.min(cap, window.innerWidth - left - GAP));
-    var l = left + 'px';
-    var m = maxW + 'px';
+    left = Math.max(GAP, Math.min(left, Math.max(GAP, window.innerWidth - 60)));
+    bottom = Math.max(8, Math.min(bottom, Math.max(8, window.innerHeight - 30)));
+    maxW = Math.max(36, Math.min(maxW, Math.max(36, window.innerWidth - left - GAP)));
+
+    var l = left + 'px', b = bottom + 'px', m = maxW + 'px';
     if (badge.style.left !== l) badge.style.left = l;
+    if (badge.style.bottom !== b) badge.style.bottom = b;
     if (badge.style.maxWidth !== m) badge.style.maxWidth = m;
-    watchSidebar(side);
+    if (compact !== isCompact) {
+      compact = isCompact;
+      if (applyLabel) applyLabel();
+    }
+    watchLayout(side, footer);
   }
 
-  /** 侧栏收起有 180ms 宽度动画，ResizeObserver 才能逐帧跟随而不跳变。 */
-  function watchSidebar(side) {
+  /** 侧栏宽度有 180ms 动画、footer 高度随收起态变化，两者都要观察。 */
+  function watchLayout(side, footer) {
     if (typeof ResizeObserver !== 'function') return;
-    if (side === observedSidebar) return;
-    if (sidebarObserver) sidebarObserver.disconnect();
-    observedSidebar = side;
-    sidebarObserver = null;
-    if (!side) return;
-    sidebarObserver = new ResizeObserver(schedulePlace);
-    sidebarObserver.observe(side);
+    if (side === observedSide && footer === observedFooter) return;
+    if (layoutObserver) layoutObserver.disconnect();
+    observedSide = side;
+    observedFooter = footer;
+    layoutObserver = null;
+    if (!side && !footer) return;
+    layoutObserver = new ResizeObserver(schedulePlace);
+    if (side) layoutObserver.observe(side);
+    if (footer) layoutObserver.observe(footer);
   }
 
   function bindPlacement() {
@@ -165,6 +187,23 @@
     });
 
     var versionLabel = '版本未知';
+    var lastLabels = null;
+
+    function shortVersion() {
+      var m = /^(v?\d+(?:\.\d+)+)/.exec(versionLabel);
+      return m ? m[1] : String(versionLabel).slice(0, 6);
+    }
+
+    /** 侧栏收起 / 竖屏时只显示短标签，完整信息留在 title 与详情里。 */
+    applyLabel = function () {
+      if (!lastLabels) return;
+      var text = compact ? lastLabels.short : lastLabels.full;
+      if (label.textContent !== text) label.textContent = text;
+      var tip = lastLabels.bad
+        ? (lastLabels.hint || '取源异常')
+        : (compact ? versionLabel + '（点击查看构建版本详情）' : '点击查看构建版本详情');
+      if (box.getAttribute('title') !== tip) box.setAttribute('title', tip);
+    };
 
     function render(info) {
       var build = info && info.build;
@@ -185,9 +224,13 @@
       var bad = !!st && st.ok === false;
       if (bad) {
         var local = st.blame === 'us';
-        label.textContent = local ? '播放服务异常 · 请看日志' : '红果接口繁忙 · 自动重试中';
+        lastLabels = {
+          full: local ? '播放服务异常 · 请看日志' : '红果接口繁忙 · 自动重试中',
+          short: '!',
+          bad: true,
+          hint: st.hint || st.state
+        };
         box.setAttribute('data-alert', '1');
-        box.title = st.hint || '取源异常';
         line(detail, '取源状态：' + (st.hint || st.state));
         line(detail, '故障归属：' + (local ? '本机服务' : '红果上游接口') +
           '　连续失败 ' + (st.failures || 0) + ' 次　自动重试 ' + (st.retries || 0) + ' 次');
@@ -196,11 +239,11 @@
         }
         line(detail, '官方恢复后播放会自动成功，角标也会自动还原。');
       } else {
-        label.textContent = versionLabel;
+        lastLabels = { full: versionLabel, short: shortVersion(), bad: false, hint: null };
         box.setAttribute('data-alert', '0');
-        box.title = '点击查看构建版本详情';
         if (st) line(detail, '取源状态：正常');
       }
+      applyLabel();
     }
 
     function refresh() {

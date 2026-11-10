@@ -44,8 +44,9 @@ NOTICE —— 来源、许可证与修改说明
 - web/version-badge.js    左下角版本角标：读取 /api/health 的 build 显示两个上游
                           版本与定制层修订；轮询 upstream 字段，取源故障时提示
                           「红果接口繁忙 · 自动重试中」并区分本机异常，恢复后自动还原。
-                          位置实时跟随 .sidebar 右边缘（ResizeObserver 逐帧跟随收起
-                          动画），避开侧栏底部的收起控件，竖屏无侧栏时回落左下角。
+                          位置固定在侧栏内部、.sidebar-footer 上方，宽度不超过侧栏，
+                          既不压收起按钮也不压海报；收起 / 竖屏时缩成短标签，
+                          ResizeObserver 逐帧跟随收起动画。
 - web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本、侧栏增强与版本角标注入；
                           注入时按文件内容附加 ?v= 指纹，避免浏览器按旧 URL 缓存一小时。
 - Dockerfile / docker-compose.yml / .dockerignore   armv7 容器构建与内存约束。
