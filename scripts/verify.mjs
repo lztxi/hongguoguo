@@ -97,6 +97,9 @@ if (requireFrontend) {
     const badge = read('app/dist-react/version-badge.js');
     check('版本角标读取 health 的上游版本', badge.includes('/api/health') && badge.includes('jackotom') && badge.includes('zfdang'));
     check('版本角标说明上游升级机制', badge.includes('上游升级需合并升级 PR'));
+    check('版本角标避让侧栏收起控件',
+      badge.includes('function place()') && badge.includes('getBoundingClientRect')
+      && badge.includes('ResizeObserver') && badge.includes('badge.style.left'));
     check('版本角标语法', syntax('app/dist-react/version-badge.js') === null);
   }
   if (exists('app/dist-react/sidebar-collapse.js')) {
@@ -177,6 +180,9 @@ if (exists('server/index.js')) {
     srv.includes('fragmentCache') && srv.includes('prefetchTimers') && srv.includes('streamControllers'));
   const badge = exists('web/version-badge.js') ? read('web/version-badge.js') : '';
   check('版本角标读取 build 字段', badge.includes("'/api/health'") && badge.includes('build.jackotom'));
+  check('版本角标位置跟随侧栏而不重叠',
+    badge.includes('function place()') && badge.includes('.sidebar')
+    && badge.includes('badge.style.left') && badge.includes('attributeFilter'));
   const fe = read('web/build-frontend.mjs');
   check('前端构建注入版本角标',
     fe.includes("'version-badge.js'") && fe.includes("html.includes('version-badge.js')"));

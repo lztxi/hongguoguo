@@ -12,7 +12,10 @@
  *   不会阻止空闲降级）；切回标签页时立即刷新一次；
  * - 外部脚本 + 动态 <style>，符合首页 CSP（script-src 'self' / style-src 'unsafe-inline'）；
  * - 挂在 body 下的独立元素，不侵入 React 的 #root，也不会被重渲染冲掉；
- * - 颜色继承 body，浅色/深色界面都能看清；请求失败时保留上一次状态。
+ * - 颜色继承 body，浅色/深色界面都能看清；请求失败时保留上一次状态；
+ * - 位置实时跟随侧栏右边缘：写死在 left:10px 会压住侧栏底部的「收起侧栏」
+ *   按钮（侧栏宽度在 214/190/164/62px 间变化，竖屏布局还会整条隐藏），
+ *   因此改为测量 .sidebar 的右边界，把角标放到侧栏右侧的内容区里。
  */
 (function () {
   'use strict';
@@ -20,7 +23,14 @@
   var BOX_ID = 'hg-version-badge';
   var STYLE_ID = 'hg-version-badge-css';
   var POLL_MS = 30000;
+  var GAP = 10;                 // 与侧栏右缘 / 屏幕左缘的间距
+  var MAX_W = 300;
+  var badge = null;             // 角标 DOM，ready() 里赋值
+  var observedSidebar = null;   // 已绑定 ResizeObserver 的侧栏节点
+  var sidebarObserver = null;
+  var placeFrame = 0;
   var CSS = [
+    // left / max-width 的初始值只是兜底：place() 会用内联样式按侧栏宽度覆盖。
     '.hg-version-badge{',
     'position:fixed;left:10px;bottom:8px;z-index:9998;max-width:300px;',
     'font:11px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
@@ -52,6 +62,69 @@
     parent.appendChild(div);
   }
 
+  function schedulePlace() {
+    if (placeFrame) return;
+    placeFrame = window.requestAnimationFrame(function () {
+      placeFrame = 0;
+      place();
+    });
+  }
+
+  /**
+   * 侧栏底部有「收起侧栏」控件，角标固定在 left:10px 会直接盖住它。
+   * 侧栏宽度随展开 / 收起 / 窗口宽度在 214、190、164、62px 间变化，
+   * 竖屏布局（.layout-portrait）还会整条 display:none —— 所以不能写死
+   * 任何宽度，直接量 .sidebar 的右边缘最稳：侧栏可见就贴在它右侧的内容
+   * 区里，侧栏隐藏就回落到屏幕左下角。
+   */
+  function place() {
+    if (!badge) return;
+    var side = document.querySelector('.sidebar');
+    var left = GAP;
+    if (side) {
+      var r = side.getBoundingClientRect();
+      var cs = window.getComputedStyle(side);
+      if (r.width > 0 && r.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden') {
+        left = Math.round(r.right) + GAP;
+      }
+    }
+    if (!isFinite(left)) left = GAP;
+    // 极窄视口兜底：至少给角标留 110px，别把它顶出屏幕右侧
+    left = Math.max(GAP, Math.min(left, Math.max(GAP, window.innerWidth - 110)));
+    var cap = window.innerWidth <= 640 ? 200 : MAX_W;
+    var maxW = Math.max(110, Math.min(cap, window.innerWidth - left - GAP));
+    var l = left + 'px';
+    var m = maxW + 'px';
+    if (badge.style.left !== l) badge.style.left = l;
+    if (badge.style.maxWidth !== m) badge.style.maxWidth = m;
+    watchSidebar(side);
+  }
+
+  /** 侧栏收起有 180ms 宽度动画，ResizeObserver 才能逐帧跟随而不跳变。 */
+  function watchSidebar(side) {
+    if (typeof ResizeObserver !== 'function') return;
+    if (side === observedSidebar) return;
+    if (sidebarObserver) sidebarObserver.disconnect();
+    observedSidebar = side;
+    sidebarObserver = null;
+    if (!side) return;
+    sidebarObserver = new ResizeObserver(schedulePlace);
+    sidebarObserver.observe(side);
+  }
+
+  function bindPlacement() {
+    window.addEventListener('resize', schedulePlace, { passive: true });
+    if (typeof MutationObserver !== 'function') { schedulePlace(); return; }
+    // 收起 class 挂在 <html>，竖屏 / 播放页 class 挂在 .app-layout；
+    // childList 负责 React 首次挂载或替换侧栏后重新测量。
+    // attributeFilter 只盯 class，place() 写 style 不会造成自触发死循环。
+    var mo = new MutationObserver(schedulePlace);
+    mo.observe(document.documentElement, {
+      attributes: true, attributeFilter: ['class'], childList: true, subtree: true
+    });
+    schedulePlace();
+  }
+
   ready(function () {
     if (document.getElementById(BOX_ID)) return;
 
@@ -78,6 +151,8 @@
     detail.hidden = true;
     box.appendChild(detail);
     document.body.appendChild(box);
+    badge = box;
+    bindPlacement();
 
     function toggle() {
       var open = box.getAttribute('data-open') === '1';
@@ -129,6 +204,7 @@
     }
 
     function refresh() {
+      schedulePlace();  // 每 30s 顺带校准一次位置，作为观察器漏事件的兜底
       try {
         fetch('/api/health', { cache: 'no-store' })
           .then(function (r) { return r.ok ? r.json() : null; })

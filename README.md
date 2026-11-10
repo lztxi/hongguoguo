@@ -67,6 +67,11 @@ deploy/                     玩客云侧 compose + install / upgrade / rollback
 
 由 `build-frontend.mjs` 每次构建注入 `index.html`，升级上游不会丢。
 
+**版本角标不再和收起控件抢位置**：`overlay/web/version-badge.js` 写死在 `left:10px`
+会盖住侧栏底部的「收起侧栏」按钮。现在它实时测量 `.sidebar` 的右边缘，停在侧栏
+右侧的内容区里；展开（214/190/164px）、收起（62px）、竖屏布局侧栏隐藏时自动
+回落到屏幕左下角，`ResizeObserver` 让它在 180ms 收起动画期间逐帧跟随，不跳变。
+
 ## 首次使用
 
 ### 1. GitHub 仓库设置（代码已推送）

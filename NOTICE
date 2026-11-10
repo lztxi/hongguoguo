@@ -40,9 +40,11 @@ NOTICE —— 来源、许可证与修改说明
 - web/web-compat.js       非安全上下文(UUID/clipboard)补丁与 HEVC 解码能力探测。
 - web/sidebar-collapse.js 侧边栏收起增强：图标态 / 手动切换 / 自动收起 / 偏好持久化，
                           纯运行时 DOM+CSS 注入，不修改上游 React 源码。
-- web/version-badge.js    页面左下角版本角标：读取 /api/health 的 build 显示两个上游
+- web/version-badge.js    左下角版本角标：读取 /api/health 的 build 显示两个上游
                           版本与定制层修订；轮询 upstream 字段，取源故障时提示
                           「红果接口繁忙 · 自动重试中」并区分本机异常，恢复后自动还原。
+                          位置实时跟随 .sidebar 右边缘（ResizeObserver 逐帧跟随收起
+                          动画），避开侧栏底部的收起控件，竖屏无侧栏时回落左下角。
 - web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本、侧栏增强与版本角标注入。
 - Dockerfile / docker-compose.yml / .dockerignore   armv7 容器构建与内存约束。
 
