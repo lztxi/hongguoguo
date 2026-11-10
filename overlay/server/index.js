@@ -210,6 +210,13 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8', '.map': 'application/json',
 };
 const STATIC_DIR = path.join(shim.__web.appDir, 'dist-react');
+// 入口与自制增强脚本随改造频繁更新，禁止缓存；带 hash 的 vite assets 才可长缓存。
+// sidebar-collapse.js / version-badge.js 也是 overlay 注入的（且会热修），之前
+// 继承 max-age=3600，导致改完刷新页面仍是旧脚本、看起来像没修好。
+const NO_STORE_FILES = new Set([
+  '/index.html', '/bridge.js', '/web-compat.js',
+  '/sidebar-collapse.js', '/version-badge.js',
+]);
 
 async function fallbackIndex(res) {
   try {
@@ -244,9 +251,7 @@ async function serveStatic(req, res, pathname) {
   res.writeHead(200, {
     'Content-Type': type,
     'Content-Length': stat.size,
-    // 入口与引导/桥接脚本随改造频繁更新，禁止缓存；带 hash 的 assets 可长缓存。
-    'Cache-Control': (rel === '/index.html' || rel === '/bridge.js' || rel === '/web-compat.js')
-      ? 'no-store' : 'public, max-age=3600',
+    'Cache-Control': NO_STORE_FILES.has(rel) ? 'no-store' : 'public, max-age=3600',
   });
   if (req.method === 'HEAD') { res.end(); return; }
   try {

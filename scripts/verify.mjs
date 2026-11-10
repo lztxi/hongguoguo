@@ -91,6 +91,10 @@ if (requireFrontend) {
     check('index.html 注入 web-compat.js', html.includes('./web-compat.js'));
     check('index.html 注入 sidebar-collapse.js', html.includes('./sidebar-collapse.js'));
     check('index.html 注入 version-badge.js', html.includes('./version-badge.js'));
+    check('增强脚本带内容指纹（改完刷新即生效）',
+      /web-compat\.js\?v=[0-9a-f]{8}/.test(html)
+      && /sidebar-collapse\.js\?v=[0-9a-f]{8}/.test(html)
+      && /version-badge\.js\?v=[0-9a-f]{8}/.test(html));
     check('无内联脚本（CSP）', !/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i.test(html));
   }
   if (exists('app/dist-react/version-badge.js')) {
@@ -134,6 +138,9 @@ if (exists('server/index.js')) {
     && srv.includes('global.gc(); global.gc();'));
   check('GC 门槛已从 80MB 下调', srv.includes('before < 40 * MBYTES') && !srv.includes('before < 80 * MBYTES'));
   check('health 暴露 idle 状态', srv.includes('idle: idleSnapshot()'));
+  check('自制增强脚本禁止缓存，改完刷新即生效',
+    srv.includes('NO_STORE_FILES.has(rel)') && srv.includes("'/version-badge.js'")
+    && srv.includes("'/sidebar-collapse.js'") && !srv.includes("rel === '/bridge.js' || rel === '/web-compat.js'"));
 }
 
 // 8. 连播预热（换集秒开：修掉「只预热 1 集 + 后一个被丢弃」与 90s TTL 过期）

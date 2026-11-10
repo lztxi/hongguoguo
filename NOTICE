@@ -34,7 +34,8 @@ NOTICE —— 来源、许可证与修改说明
                           首片预缓冲（包装 plan.read，Range/Content-Length 语义不变）
                           与预热避让（首片稳定输出后才启动，不抢首播带宽）；
                           上游取源故障容错（错误分类、播放自动重试、预热熔断指数退避，
-                          /api/health 的 upstream 字段区分上游/本机故障）。
+                          /api/health 的 upstream 字段区分上游/本机故障）；
+                          自制增强脚本静态资源返回 no-store，热修后刷新页面即生效。
 - web/gen-bridge.mjs      从上游 preload.js 自动生成 window.electronAPI 浏览器桥接，
                           并把纯数字 vid 的播放切到 hgop 内核，播放地址附带后续 3 集 vid。
 - web/web-compat.js       非安全上下文(UUID/clipboard)补丁与 HEVC 解码能力探测。
@@ -45,7 +46,8 @@ NOTICE —— 来源、许可证与修改说明
                           「红果接口繁忙 · 自动重试中」并区分本机异常，恢复后自动还原。
                           位置实时跟随 .sidebar 右边缘（ResizeObserver 逐帧跟随收起
                           动画），避开侧栏底部的收起控件，竖屏无侧栏时回落左下角。
-- web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本、侧栏增强与版本角标注入。
+- web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本、侧栏增强与版本角标注入；
+                          注入时按文件内容附加 ?v= 指纹，避免浏览器按旧 URL 缓存一小时。
 - Dockerfile / docker-compose.yml / .dockerignore   armv7 容器构建与内存约束。
 
 三、对上游文件的唯一修改
