@@ -293,6 +293,151 @@ const PREBUF_BYTES = Math.min(2, Math.max(0,
   Number(process.env.HONGGUO_HGOP_PREBUF_MB ?? 1) || 0)) * 1024 * 1024;
 const PREBUF_LIMIT_BYTES = Math.min(12, Math.max(1,
   Number(process.env.HONGGUO_HGOP_PREBUF_LIMIT_MB || 4) || 4)) * 1024 * 1024;
+
+// ------------------------------------------------- 上游取源故障容错（熔断 + 退避 + 自动重试）
+/**
+ * 2026-11-10 红果官方临时收紧校验，取址接口返回 HTTP 200 + content-length: 0，
+ * 上游两个项目同时报障。故障期间有两件事特别难受：
+ *   1. 预热队列每 250ms 就注册一个新设备并重新取址，几十次无效请求反而可能让
+ *      本机 IP 被风控盯得更久；
+ *   2. <video> 一收到 500 就锁死，官方恢复后还得手动刷新页面。
+ * 这里在 overlay 层加三层保护，不改上游复制源码（同步上游不冲突）：
+ *   - 区分「红果接口坏了」与「我们本地坏了」，写进 /api/health 与网页角标；
+ *   - 播放请求在响应头写出之前自动重试有限次，浏览器只是多等几秒；
+ *   - 连续失败达阈值后熔断：暂停预热队列并指数退避，一次播放成功即惰性解封
+ *     （不主动探测、不额外打接口，用户点播本身就是探测）。
+ * HONGGUO_UPSTREAM_GUARD=0 可一键回到旧行为。
+ */
+const clampNum = (value, min, max, fallback) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+};
+const GUARD = {
+  enabled: process.env.HONGGUO_UPSTREAM_GUARD !== '0',
+  failThreshold: clampNum(process.env.HONGGUO_UPSTREAM_FAIL_THRESHOLD, 2, 10, 3) | 0,
+  retryMax: clampNum(process.env.HONGGUO_UPSTREAM_RETRY_MAX, 0, 4, 2) | 0,
+  retryBaseMs: clampNum(process.env.HONGGUO_UPSTREAM_RETRY_BASE_MS, 300, 10000, 1200) | 0,
+  retryDeadlineMs: clampNum(process.env.HONGGUO_UPSTREAM_RETRY_DEADLINE_MS, 3000, 60000, 20000) | 0,
+  cooldownBaseMs: clampNum(process.env.HONGGUO_UPSTREAM_COOLDOWN_MS, 5000, 120000, 30000) | 0,
+  cooldownMaxMs: clampNum(process.env.HONGGUO_UPSTREAM_COOLDOWN_MAX_MS, 30000, 600000, 300000) | 0,
+};
+// 这些是「上游接口/片源侧」的错误；AbortError、ECONNRESET 等属于客户端切集/断连，
+// UNSUPPORTED_BYTEVC2 / SECURITY_BLOCKED 属于内容本身，都不能算上游临时故障。
+const UPSTREAM_FAULT_CODES = new Set([
+  'EMPTY_RESPONSE', 'BUSINESS_REJECTED', 'MISSING_MODEL', 'INVALID_RESPONSE',
+  'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNABORTED',
+]);
+const upstream = {
+  failures: 0, trips: 0, retries: 0, warmSuppressed: 0,
+  cooldownUntil: 0, cooldownMs: 0, lastSuccessAt: 0, lastRecoveryAt: 0,
+  lastFailure: null, lastLocalError: null,
+  warmingPaused: false, warmResumeTimer: null,
+};
+let planCallPurpose = 'play'; // 仅在同一同步调用栈内标记，见 withPlanPurpose()
+function withPlanPurpose(purpose, fn) {
+  const prev = planCallPurpose;
+  planCallPurpose = purpose;
+  try { return fn(); } finally { planCallPurpose = prev; }
+}
+
+function isUpstreamFault(error) {
+  if (!error || error.name === 'AbortError' || error.code === 'ERR_STREAM_PREMATURE_CLOSE') return false;
+  if (UPSTREAM_FAULT_CODES.has(String(error.code || ''))) return true;
+  const msg = String(error.message || '');
+  return /空响应|签名或设备鉴权|播放接口|视频源不可用|App 接口暂未提供|未返回本集片源|片源地址或密钥无法解析|取源失败/.test(msg);
+}
+function upstreamCooling() {
+  return GUARD.enabled && Date.now() < upstream.cooldownUntil;
+}
+function noteLocalError(error) {
+  upstream.lastLocalError = {
+    message: String(error?.message || error).slice(0, 240), at: new Date().toISOString(),
+  };
+}
+function noteUpstreamSuccess() {
+  upstream.lastSuccessAt = Date.now();
+  if (upstream.failures || upstream.cooldownUntil) {
+    upstream.lastRecoveryAt = Date.now();
+    log(`[upstream] 取源恢复，预热队列解封（此前连续失败 ${upstream.failures} 次）`);
+  }
+  upstream.failures = 0;
+  upstream.cooldownUntil = 0;
+  upstream.cooldownMs = 0;
+  if (upstream.warmingPaused) resumeWarmQueue(0);
+}
+/** final=false 表示「播放自动重试中的一次失败」：只记录，不重复累加/延长退避。 */
+function noteUpstreamFailure(error, purpose, final = true) {
+  upstream.lastFailure = {
+    code: String(error?.code || 'STREAM_ERROR'),
+    message: String(error?.message || error).slice(0, 240),
+    purpose, at: new Date().toISOString(),
+  };
+  if (final) upstream.failures += 1;
+  if (!GUARD.enabled || upstream.failures < GUARD.failThreshold) return;
+  if (upstreamCooling() && upstream.warmingPaused) return; // 已熔断，别反复重置退避
+  // 指数退避：30s → 60s → 120s → 300s 封顶；一次成功即清零。
+  upstream.cooldownMs = upstream.cooldownMs
+    ? Math.min(upstream.cooldownMs * 2, GUARD.cooldownMaxMs)
+    : GUARD.cooldownBaseMs;
+  upstream.cooldownUntil = Date.now() + upstream.cooldownMs;
+  upstream.trips += 1;
+  log(`[upstream] 连续 ${upstream.failures} 次取源失败，判定上游接口故障；预热暂停 ${Math.round(upstream.cooldownMs / 1000)}s，播放请求仍会自动重试`);
+  pauseWarmQueue();
+}
+function pauseWarmQueue() {
+  upstream.warmingPaused = true;
+  warmQueue.length = 0; // 故障期排队的任务全部作废，避免解封后集中轰炸
+  if (upstream.warmResumeTimer) clearTimeout(upstream.warmResumeTimer);
+  const wait = Math.max(1000, upstream.cooldownUntil - Date.now());
+  upstream.warmResumeTimer = setTimeout(() => {
+    upstream.warmResumeTimer = null;
+    upstream.warmingPaused = false;
+    // 半开（half-open）：退避结束后把计数清零，让 health/角标回到正常态，
+    // 不再把一次已经过去的故障挂成「持续故障」；若上游仍坏，下一次失败会
+    // 重新计数并按翻倍的退避再次熔断。cooldownMs 故意保留用于指数退避。
+    upstream.failures = 0;
+    upstream.lastRecoveryAt = Date.now();
+    log('[upstream] 退避结束（半开）：预热队列恢复，等待下一次播放确认上游状态');
+    runWarmQueue();
+  }, wait);
+  upstream.warmResumeTimer.unref?.();
+}
+function resumeWarmQueue(delay) {
+  if (upstream.warmResumeTimer) {
+    clearTimeout(upstream.warmResumeTimer);
+    upstream.warmResumeTimer = null;
+  }
+  upstream.warmingPaused = false;
+  setTimeout(runWarmQueue, delay || 0).unref?.();
+}
+const sleep = ms => new Promise(resolve => { setTimeout(resolve, ms).unref?.(); });
+
+/** 所有取址/计划构建的唯一入口：播放侧自动重试，预热侧遇熔断立即让路。 */
+async function guardedGetPlan(call, args, purpose) {
+  const attempts = purpose === 'play' && GUARD.enabled ? 1 + GUARD.retryMax : 1;
+  const deadline = Date.now() + GUARD.retryDeadlineMs;
+  for (let attempt = 0; ; attempt++) {
+    if (purpose === 'warm' && upstreamCooling()) {
+      upstream.warmSuppressed += 1;
+      throw Object.assign(new Error('上游取源故障，预热已进入退避'), { code: 'UPSTREAM_COOLDOWN' });
+    }
+    try {
+      const plan = await call(...args);
+      noteUpstreamSuccess();
+      return plan;
+    } catch (error) {
+      if (!isUpstreamFault(error)) { noteLocalError(error); throw error; }
+      const last = attempt + 1 >= attempts || Date.now() >= deadline;
+      noteUpstreamFailure(error, purpose, last);
+      if (last) throw error;
+      upstream.retries += 1;
+      const wait = Math.min(GUARD.retryBaseMs * (2 ** attempt), 8000, Math.max(0, deadline - Date.now()));
+      log(`[upstream] 取源失败（${error.code || 'UNKNOWN'}），${wait}ms 后自动重试 ${attempt + 1}/${attempts - 1}`);
+      await sleep(wait);
+    }
+  }
+}
+
 let hgop = null;
 if (HGOP_ENABLED) {
   try {
@@ -317,6 +462,7 @@ if (HGOP_ENABLED) {
     const rawGetPlan = hgop.getStreamingPlan.bind(hgop);
     hgop.getStreamingPlan = (...args) => {
       const key = `${args[0]}:${args[1]}`;
+      const purpose = planCallPurpose; // play = 用户点播（可自动重试），warm = 预热（遇熔断让路）
       const cached = hgop.plans.get(key);
       if (cached?.expires > Date.now()) {
         cached.expires = Date.now() + PLAN_TTL_MS;
@@ -325,7 +471,7 @@ if (HGOP_ENABLED) {
         return Promise.resolve(cached.plan);
       }
       if (planFlights.has(key)) return planFlights.get(key);
-      const pending = rawGetPlan(...args).then(plan => {
+      const pending = guardedGetPlan(rawGetPlan, args, purpose).then(plan => {
         attachPrebuffer(plan, key);
         // 上游写入 plans 时用的是 90s TTL，这里统一续到我们配置的时长；
         // planFlights 命中/空闲淘汰都读同一个 expires，行为保持一致。
@@ -338,6 +484,7 @@ if (HGOP_ENABLED) {
       return pending;
     };
     log(`[hgop] 635 播放内核就绪：缓存 ${Math.round(hgop.maxCacheBytes / MB)}MB / 计划 ${Math.round(hgop.maxPlanBytes / MB)}MB / 最多 ${hgop.maxPlanCount} 个 / TTL ${Math.round(PLAN_TTL_MS / 60000)} 分钟 / 连播预热 ${WARM_DEPTH} 集 / 首片预缓冲 ${Math.round(PREBUF_BYTES / MB)}MB×${Math.round(PREBUF_LIMIT_BYTES / MB)}MB 上限 / 预热避让 ${WARM_MIN_DELAY_MS}ms+${Math.round(WARM_TRIGGER_BYTES / 1024)}KB`);
+    log(`[upstream] 取源容错${GUARD.enabled ? `已启用：连续 ${GUARD.failThreshold} 次失败熔断 ${Math.round(GUARD.cooldownBaseMs / 1000)}s 起（指数退避封顶 ${Math.round(GUARD.cooldownMaxMs / 1000)}s）/ 播放自动重试 ${GUARD.retryMax} 次` : '已禁用（HONGGUO_UPSTREAM_GUARD=0）'}`);
   } catch (error) {
     console.error('[hgop] 播放内核加载失败，自动回退原 IPC 播放链路:', error);
     hgop = null;
@@ -517,6 +664,12 @@ function planUsable(key) {
 
 function runWarmQueue() {
   if (warmActive || !hgop) return;
+  // 上游接口故障时暂停整条预热队列：不再注册设备、不再取址，避免无效请求轰炸。
+  // 播放请求不受此限制（用户主动点播本身就是一次低成本的恢复探测）。
+  if (upstreamCooling()) {
+    if (!upstream.warmingPaused) pauseWarmQueue();
+    return;
+  }
   const job = warmQueue.shift();
   if (!job) return;
   if (planUsable(job.key) || hgopWarming.has(job.key)) {
@@ -526,7 +679,8 @@ function runWarmQueue() {
   warmActive = true;
   hgopWarming.add(job.key);
   const controller = new AbortController();
-  hgop.getStreamingPlan(job.vid, job.quality, controller.signal, 45000, job.nextVids)
+  withPlanPurpose('warm', () =>
+    hgop.getStreamingPlan(job.vid, job.quality, controller.signal, 45000, job.nextVids))
     .then(async plan => {
       log(`[hgop] 预热完成 ${job.key}（队列余 ${warmQueue.length}）`);
       // 单独给首片预缓冲 8s 上限，CDN 慢节点不能把整条预热队列拖死
@@ -546,6 +700,7 @@ function runWarmQueue() {
 
 function hgopWarm(vid, quality, nextVids) {
   const key = `${vid}:${quality}`;
+  if (upstreamCooling()) { upstream.warmSuppressed += 1; return; }
   if (planUsable(key) || hgopWarming.has(key)) return;
   if (warmQueue.some(job => job.key === key)) return;
   if (warmQueue.length >= 6) return; // 异常情况下不无限堆积
@@ -595,6 +750,43 @@ function hgopSnapshot() {
     },
     activeStreams: hgop.activeStreams,
     inFlight: hgop.inFlight.size, pending: hgop.queue.length,
+  };
+}
+
+/** 一眼分清「我们坏了」还是「红果接口坏了」，网页角标与排障都读这里。 */
+function upstreamSnapshot() {
+  const now = Date.now();
+  const cooling = upstreamCooling();
+  const last = upstream.lastFailure;
+  const local = upstream.lastLocalError;
+  const recent = item => !!item && now - Date.parse(item.at) < 2 * 60 * 1000;
+  let state = 'ok', blame = 'none', hint = '取源正常';
+  if (cooling) {
+    state = 'cooldown'; blame = 'upstream';
+    hint = '红果接口暂时不可用：已暂停预热，播放会自动重试，恢复后自动解封';
+  } else if (recent(last) && upstream.failures > 0) {
+    state = 'degraded'; blame = 'upstream';
+    hint = '红果接口偶发失败：播放已自动重试';
+  } else if (recent(local) && (!recent(last) || local.at > last.at)) {
+    state = 'local-error'; blame = 'us';
+    hint = '播放服务本地异常，请查看容器日志';
+  }
+  return {
+    guard: GUARD.enabled ? 'on' : 'off',
+    state, blame, hint, ok: state === 'ok',
+    failures: upstream.failures, trips: upstream.trips,
+    retries: upstream.retries, warmSuppressed: upstream.warmSuppressed,
+    warmingPaused: upstream.warmingPaused,
+    cooldownRemainingSec: Math.max(0, Math.ceil((upstream.cooldownUntil - now) / 1000)),
+    cooldownMs: upstream.cooldownMs,
+    config: {
+      failThreshold: GUARD.failThreshold, retryMax: GUARD.retryMax,
+      retryBaseMs: GUARD.retryBaseMs, retryDeadlineMs: GUARD.retryDeadlineMs,
+      cooldownBaseMs: GUARD.cooldownBaseMs, cooldownMaxMs: GUARD.cooldownMaxMs,
+    },
+    lastFailure: last, lastLocalError: local,
+    lastSuccessAt: upstream.lastSuccessAt ? new Date(upstream.lastSuccessAt).toISOString() : null,
+    lastRecoveryAt: upstream.lastRecoveryAt ? new Date(upstream.lastRecoveryAt).toISOString() : null,
   };
 }
 
@@ -799,6 +991,7 @@ const server = http.createServer(async (req, res) => {
       build: buildInfo,
       mem: memorySnapshot(),
       hgopStats: hgopSnapshot(),
+      upstream: upstreamSnapshot(),
       gc: {
         enabled: typeof global.gc === 'function',
         count: gcCount,

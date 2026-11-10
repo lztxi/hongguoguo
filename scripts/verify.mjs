@@ -195,6 +195,48 @@ if (exists('server/index.js')) {
     `${LOCK.jackotom.tag} / ${LOCK.zfdang.tag}`);
 }
 
+// 11. 上游取源故障容错（2026-11-10 官方空响应事件）
+{
+  const srv = exists('server/index.js') ? read('server/index.js') : '';
+  check('容错可一键禁用且参数可配置',
+    srv.includes("HONGGUO_UPSTREAM_GUARD !== '0'") && srv.includes('HONGGUO_UPSTREAM_FAIL_THRESHOLD')
+    && srv.includes('HONGGUO_UPSTREAM_RETRY_MAX') && srv.includes('HONGGUO_UPSTREAM_COOLDOWN_MAX_MS'));
+  check('区分上游故障与本地/客户端错误',
+    srv.includes('function isUpstreamFault(') && srv.includes("'EMPTY_RESPONSE'")
+    && srv.includes("error.name === 'AbortError'") && srv.includes('noteLocalError'));
+  check('播放侧自动重试且有总时限',
+    srv.includes('async function guardedGetPlan(') && srv.includes('GUARD.retryMax')
+    && srv.includes('GUARD.retryDeadlineMs') && srv.includes('guardedGetPlan(rawGetPlan, args, purpose)'));
+  check('预热侧标记 purpose 且熔断让路',
+    srv.includes("withPlanPurpose('warm'") && srv.includes('UPSTREAM_COOLDOWN')
+    && srv.includes('if (upstreamCooling())'));
+  check('熔断暂停预热队列并指数退避',
+    srv.includes('function pauseWarmQueue()') && srv.includes('warmQueue.length = 0')
+    && srv.includes('upstream.cooldownMs * 2') && srv.includes('GUARD.cooldownMaxMs'));
+  check('播放成功立即解封',
+    srv.includes('function noteUpstreamSuccess()') && srv.includes('if (upstream.warmingPaused) resumeWarmQueue(0)'));
+  check('health 暴露故障分类',
+    srv.includes('upstream: upstreamSnapshot()') && srv.includes("blame = 'upstream'")
+    && srv.includes("blame = 'us'") && srv.includes('cooldownRemainingSec'));
+  const badge = exists('web/version-badge.js') ? read('web/version-badge.js') : '';
+  check('版本角标轮询上游状态',
+    badge.includes('info.upstream') && badge.includes('setInterval(refresh, POLL_MS)')
+    && badge.includes("document.addEventListener('visibilitychange'"));
+  check('版本角标故障时提示且恢复后还原',
+    badge.includes('data-alert') && badge.includes('红果接口繁忙') && badge.includes('label.textContent = versionLabel'));
+  const compose = fs.readFileSync(path.join(ROOT, 'deploy', 'docker-compose.yml'), 'utf8');
+  const envExample = fs.readFileSync(path.join(ROOT, 'deploy', '.env.example'), 'utf8');
+  check('部署配置暴露容错开关',
+    compose.includes('HONGGUO_UPSTREAM_GUARD') && envExample.includes('HONGGUO_UPSTREAM_RETRY_BASE_MS'));
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  check('文档说明容错与故障分类',
+    readme.includes('上游取源故障容错') && readme.includes('"blame": "upstream"'));
+  const up = fs.readFileSync(path.join(ROOT, 'deploy', 'upgrade.sh'), 'utf8');
+  check('升级脚本回显取源状态', up.includes('取源状态：'));
+  check('服务端语法', syntax('server/index.js') === null);
+  check('版本角标语法', syntax('web/version-badge.js') === null);
+}
+
 console.log(notes.join('\n'));
 if (failures.length) {
   console.error('\n[verify] 失败：\n' + failures.join('\n'));

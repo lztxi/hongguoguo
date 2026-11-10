@@ -32,14 +32,17 @@ NOTICE —— 来源、许可证与修改说明
                           空闲降级（心跳/SSE 不计入活跃、清缓存 + full GC、无感唤醒）；
                           连播预热队列（后续 3 集、串行不丢弃、计划 TTL 10 分钟）；
                           首片预缓冲（包装 plan.read，Range/Content-Length 语义不变）
-                          与预热避让（首片稳定输出后才启动，不抢首播带宽）。
+                          与预热避让（首片稳定输出后才启动，不抢首播带宽）；
+                          上游取源故障容错（错误分类、播放自动重试、预热熔断指数退避，
+                          /api/health 的 upstream 字段区分上游/本机故障）。
 - web/gen-bridge.mjs      从上游 preload.js 自动生成 window.electronAPI 浏览器桥接，
                           并把纯数字 vid 的播放切到 hgop 内核，播放地址附带后续 3 集 vid。
 - web/web-compat.js       非安全上下文(UUID/clipboard)补丁与 HEVC 解码能力探测。
 - web/sidebar-collapse.js 侧边栏收起增强：图标态 / 手动切换 / 自动收起 / 偏好持久化，
                           纯运行时 DOM+CSS 注入，不修改上游 React 源码。
-- web/version-badge.js    页面左下角版本角标：读取 /api/health 的 build 字段，
-                          显示镜像锁定的两个上游版本与定制层修订，纯运行时注入。
+- web/version-badge.js    页面左下角版本角标：读取 /api/health 的 build 显示两个上游
+                          版本与定制层修订；轮询 upstream 字段，取源故障时提示
+                          「红果接口繁忙 · 自动重试中」并区分本机异常，恢复后自动还原。
 - web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本、侧栏增强与版本角标注入。
 - Dockerfile / docker-compose.yml / .dockerignore   armv7 容器构建与内存约束。
 

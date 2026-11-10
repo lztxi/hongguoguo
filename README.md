@@ -38,7 +38,7 @@ upstream.lock.json  ──锁定──>  两个上游的 tag + commit sha
   上游新增/改名 IPC 方法会自动跟上（方法数异常下降会触发断言）；
 - `app/dist-react/index.html` 的脚本注入也是每次构建重新做的，不是改过的静态文件；
 - `overlay/web/sidebar-collapse.js`、`overlay/web/version-badge.js` —— 独立运行时增强层，
-  每次构建随兼容脚本一起注入（版本角标直接显示镜像锁定的两个上游版本）；
+  每次构建随兼容脚本一起注入（版本角标显示上游版本，并在取源故障时提示自动重试状态）；
 - `hgop/` 源文件每次从上游重新拉取，只重放 `patches.json` 的两处补丁；
   上游若改动被锚定的代码，同步脚本**报错停止**，提示人工合并，绝不覆盖。
 
@@ -202,6 +202,56 @@ GitHub 也会停用连续 60 天无任何仓库活动的 scheduled workflow，�
 
 `/api/health` 的 `hgopStats` 会报告 `warmQueue` / `planTtlMinutes` / `warmDepth`
 以及 `prebuf`（entries / mb / filled / hits / failures），方便确认有没有命中。
+
+## 上游取源故障容错（熔断 + 自动重试）
+
+2026-11-10 红果官方短暂收紧校验，取址接口返回 `HTTP 200 + content-length: 0`，
+上游两个项目（jackotom #130 / zfdang #87）同时报障，约一小时后自行恢复。
+这类故障不是部署问题，但旧行为有两个副作用：预热队列每 250ms 就重新注册设备取址、
+几十次无效请求可能让本机被风控盯得更久；`<video>` 一收到 500 就锁死，官方恢复后
+还得手动刷新页面。因此加了三层纯 overlay 保护（上游复制源码零改动）：
+
+1. **错误分类**：把 `EMPTY_RESPONSE` / 签名鉴权 / 取源超时 / 业务拒绝 / 片源解析失败
+   判为「红果上游坏了」；把 CDN 不支持 Range、客户端切集断连（`AbortError`）、
+   ByteVC2 不支持等排除；其余判为「本机服务异常」。
+2. **播放自动重试**：所有取址都经过 overlay 包装的 `getStreamingPlan`，失败时在
+   响应头写出之前按 1.2s / 2.4s / 4.8s 退避重试最多 2 次（单次总时限 20s）。
+   浏览器只是在「加载中」多等几秒，官方一恢复就能直接出画面，**不需要刷新**。
+3. **预热熔断**：连续 3 次失败即暂停整条预热队列并清空积压任务，按
+   30s → 60s → 120s → 300s 指数退避；播放请求不受限（用户点播本身就是一次
+   低成本恢复探测），**一次播放成功立即解封并清零**，解封前不主动打接口。
+
+`/api/health` 新增 `upstream` 字段，一眼分清是谁坏了：
+
+```json
+{
+  "guard": "on", "state": "cooldown", "blame": "upstream", "ok": false,
+  "hint": "红果接口暂时不可用：已暂停预热，播放会自动重试，恢复后自动解封",
+  "failures": 3, "trips": 1, "retries": 4, "warmSuppressed": 6,
+  "cooldownRemainingSec": 24, "lastFailure": { "code": "EMPTY_RESPONSE", "purpose": "warm" }
+}
+```
+
+`state` 取 `ok` / `degraded` / `cooldown` / `local-error`，`blame` 取
+`none` / `upstream` / `us`。网页左下角版本角标每 30s 读一次（心跳类请求，
+不阻止空闲降级）：故障时变橙色提示「红果接口繁忙 · 自动重试中」，恢复后自动还原
+版本号；切回标签页时立即刷新。
+
+可在 `deploy/.env` 调整，改完 `docker compose up -d` 生效：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `HONGGUO_UPSTREAM_GUARD` | `1` | `0` = 完全禁用容错（保留观测字段） |
+| `HONGGUO_UPSTREAM_FAIL_THRESHOLD` | `3` | 连续失败几次触发熔断（2~10） |
+| `HONGGUO_UPSTREAM_RETRY_MAX` | `2` | 单次播放自动重试次数（0~4） |
+| `HONGGUO_UPSTREAM_RETRY_BASE_MS` | `1200` | 重试基础间隔，逐次翻倍，封顶 8s |
+| `HONGGUO_UPSTREAM_RETRY_DEADLINE_MS` | `20000` | 单次重试总时限 |
+| `HONGGUO_UPSTREAM_COOLDOWN_MS` | `30000` | 熔断初始退避 |
+| `HONGGUO_UPSTREAM_COOLDOWN_MAX_MS` | `300000` | 退避封顶 |
+
+> 边界：只覆盖「取址/建计划阶段」的失败，此时响应头还没写出，浏览器无感；
+> 已开始推流后的断连仍按原有逻辑处理。若官方故障持续超过单次重试时限，
+> 播放器会报错，此时看角标确认原因，恢复后点一下播放即可（不必刷新）。
 
 ## 空闲降级与每周维护（低配设备）
 

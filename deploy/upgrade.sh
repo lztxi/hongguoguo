@@ -59,4 +59,10 @@ UP_J=$(printf '%s' "$BODY" | tr -d '\n' | sed -n 's/.*"jackotom":{[^}]*"tag":"\(
 UP_Z=$(printf '%s' "$BODY" | tr -d '\n' | sed -n 's/.*"zfdang":{[^}]*"tag":"\([^"]*\)".*/\1/p' || true)
 echo "==> 应用上游：${UP_J:-未知} / 播放内核：${UP_Z:-未知}"
 echo "==> 提示：单独执行本脚本不会升级上游源码，需在自动构建库合并上游升级 PR。"
+# 顺带看一眼取源容错状态：升级完成后若上游接口仍在故障，明确告诉用户是谁坏了。
+UP_HINT=$(printf '%s' "$BODY" | tr -d '\n' | sed -n 's/.*"hint":"\([^"]*\)".*/\1/p' || true)
+UP_STATE=$(printf '%s' "$BODY" | tr -d '\n' | sed -n 's/.*"state":"\([^"]*\)".*/\1/p' || true)
+if [ -n "$UP_STATE" ] && [ "$UP_STATE" != "ok" ]; then
+  echo "==> 取源状态：${UP_STATE} —— ${UP_HINT:-详见 /api/health}"
+fi
 printf '%s  %s  %s  %s/%s\n' "$STAMP" "$IMAGE" "${OLD:-none}" "${UP_J:-?}" "${UP_Z:-?}" >> upgrade.log
