@@ -41,12 +41,15 @@ NOTICE —— 来源、许可证与修改说明
 - web/web-compat.js       非安全上下文(UUID/clipboard)补丁与 HEVC 解码能力探测。
 - web/sidebar-collapse.js 侧边栏收起增强：图标态 / 手动切换 / 自动收起 / 偏好持久化，
                           纯运行时 DOM+CSS 注入，不修改上游 React 源码。
-- web/version-badge.js    左下角版本角标：读取 /api/health 的 build 显示两个上游
-                          版本与定制层修订；轮询 upstream 字段，取源故障时提示
-                          「红果接口繁忙 · 自动重试中」并区分本机异常，恢复后自动还原。
-                          位置固定在侧栏内部、.sidebar-footer 上方，宽度不超过侧栏，
-                          既不压收起按钮也不压海报；收起 / 竖屏时缩成短标签，
-                          ResizeObserver 逐帧跟随收起动画。
+- web/version-badge.js    设置页内的「版本与运行状态」卡片：直接复用上游
+                          .settings-card / .settings-group / .proxy-status-row /
+                          .settings-hint / .btn 与主题变量，与界面同款样式；
+                          读取 /api/health 的 build 显示两个上游版本、定制层修订
+                          与构建时间，轮询 upstream 字段，故障时显示归属与自动
+                          重试进度、恢复后自动还原。不再有任何 fixed 悬浮层，
+                          因此不会遮挡侧栏收起按钮或主内容区海报；取源故障
+                          时仅给「设置」导航按钮加一个 ::after 小橙点提示。
+                          MutationObserver 负责设置页首次挂载 / React 重渲染后补挂。
 - web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本、侧栏增强与版本角标注入；
                           注入时按文件内容附加 ?v= 指纹，避免浏览器按旧 URL 缓存一小时。
 - Dockerfile / docker-compose.yml / .dockerignore   armv7 容器构建与内存约束。
