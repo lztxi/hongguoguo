@@ -1,23 +1,23 @@
 {
   "comment": "当前镜像所基于的上游版本。运行 `node scripts/check-upstream.mjs --write` 可更新到最新发行版；CI 会为每次变化自动开 PR。",
-  "checkedAt": "2026-11-11T07:48:50.423Z",
+  "checkedAt": "2026-11-12T07:48:43.295Z",
   "jackotom": {
     "repo": "jackotom/hongguo-drama",
-    "tag": "v6.8",
-    "sha": "e06828f0c81392fb572a5feda6cec54dba643251",
+    "tag": "v7.1",
+    "sha": "bdab9d6158e07524f234f88c1168f20baa2cd507",
     "license": "GPL-3.0",
     "role": "桌面版主进程 / React 前端 / preload 桥接来源",
     "note": "6.4 已验证与全部定制层兼容（两处 hgop 补丁重放成功、桥接自动生成 112 invoke，新增 setInterfaceLanguage）。玩客云 9636 自 2026-11-08 起采用纯 compose 部署 GHCR 镜像。",
-    "publishedAt": "2026-11-11T02:17:07Z"
+    "publishedAt": "2026-11-12T06:10:02Z"
   },
   "zfdang": {
     "repo": "zfdang/hongguo-open-player",
-    "tag": "v1.11.5",
-    "sha": "3f687c5b07e04eb194141f8eeb78ded86d646024",
+    "tag": "v1.12.1",
+    "sha": "567b490fd2606c134d2a5e50722b59e355a430ce",
     "license": "AGPL-3.0",
     "role": "服务端 CENC-MP4 流式解密播放内核（hgop/）",
     "note": "sync.mjs 复制 src/server/{services,native} 下全部 .js（v1.11.x 为 5+15 个，依赖自动带齐）；仅 streamService.js 需要内存适配补丁。v1.11.1 只改 2 个 CI 文件、内核代码零改动。新版新增 fragmentCache / prefetchTimers 等缓存，已纳入 overlay 空闲降级清理。",
-    "publishedAt": "2026-11-11T03:51:11Z"
+    "publishedAt": "2026-11-11T15:40:18Z"
   },
   "watchPaths": [
     "main.js",
