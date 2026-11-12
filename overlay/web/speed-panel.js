@@ -3,10 +3,14 @@
  *
  * 上游桌面端只有一个 .player-controls-rate 按钮：点一下 +0.25、到 4 倍回 1 倍，
  * 没法精细调速；移动端则是一个 0.25 步长的 select。这里把它换成截图那样的
- * 「播放速度」面板：大数值 + 可拖动滑杆 + 加减按钮 + 常用档位胶囊。
+ * 「播放速度」面板：数值 + 可拖动滑杆 + 加减按钮 + 常用档位胶囊。
  *
+ * - 面板贴在播放器右下角、控制条上方的约 300px 半透明小浮层：定位层挂进
+ *   .player-stage（position:relative），完整覆盖播放器但不铺黑幕、不做整屏模糊，
+ *   pointer-events:none 让视频画面与其它控件照常可见可点；内嵌播放器 / 全屏播放
+ *   都能贴住控制条，不需要写死视口坐标；关闭由 document 捕获阶段的「点面板外」负责；
  * - 在 document 捕获阶段拦下倍速按钮 / select 的点击，阻止上游的 +0.25 与原生下拉，
- *   改为打开面板（React 18 的事件委托挂在 #root，捕获阶段拦截不会触发它的 onClick）；
+ *   改为打开/关闭面板（React 18 的事件委托挂在 #root，捕获阶段拦截不会触发它的 onClick）；
  * - 写回状态优先用 React fiber 上 PlayerControls 的 onRateChange（就是 Player.jsx 的
  *   changePlaybackRate）：React 状态、按钮文字、video.playbackRate、localStorage
  *   偏好与提示一次性同步；fiber 不可用时回退直接设 video.playbackRate，
@@ -14,7 +18,7 @@
  * - 拖动滑杆用 (value, false, false) 避免每帧写盘 / 弹提示，松手才 (value, true, true)
  *   提交；加减步长 0.1、滑杆 0.05，范围沿用上游的 0.25~4；
  * - role="dialog" 让上游 ignoresPlaybackShortcut 自动忽略面板内按键，
- *   不会误触快进 / 切集快捷键；Esc、返回按钮、点遮罩均可关闭；
+ *   不会误触快进 / 切集快捷键；Esc、返回按钮、点面板外或再点倍速按钮均可关闭；
  * - 外部（快捷键、更多菜单里的 select）改速时，用捕获阶段的 ratechange 同步面板数值；
  * - 外部脚本 + 动态 <style>，符合首页 CSP（script-src 'self' / style-src 'unsafe-inline'）。
  */
@@ -36,59 +40,67 @@
   var MASK_ID = 'hg-speed-mask';
 
   var CSS = [
-    '.hg-speed-mask{position:fixed;inset:0;z-index:10000;display:flex;',
-    'align-items:center;justify-content:center;padding:18px;',
-    'background:rgba(0,0,0,.52);backdrop-filter:blur(3px);',
-    '-webkit-backdrop-filter:blur(3px);animation:hg-speed-in .16s ease-out}',
+    // 定位层挂在 .player-stage 内（relative），铺满播放器但完全透明、不接收事件：
+    // 既不压暗视频，也不挡播放器其它控件；只有小面板自己 pointer-events:auto。
+    // 找不到播放器容器时加 is-viewport 兜底，退回视口定位。
+    '.hg-speed-mask{position:absolute;inset:0;z-index:10000;',
+    'pointer-events:none;background:transparent}',
+    '.hg-speed-mask.is-viewport{position:fixed}',
     '.hg-speed-mask[hidden]{display:none}',
-    '@keyframes hg-speed-in{from{opacity:0}to{opacity:1}}',
-    '.hg-speed-panel{width:min(440px,100%);box-sizing:border-box;',
-    'padding:16px 22px 24px;border-radius:18px;',
-    'background:rgba(28,28,30,.96);color:#fff;',
-    'box-shadow:0 18px 60px rgba(0,0,0,.55);',
-    'font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
-    'user-select:none;-webkit-user-select:none}',
-    '.hg-speed-head{display:flex;align-items:center;gap:8px;',
-    'padding-bottom:13px;border-bottom:1px solid rgba(255,255,255,.14)}',
-    '.hg-speed-back{width:32px;height:32px;flex:0 0 32px;border:0;border-radius:50%;',
-    'background:transparent;color:#fff;font-size:26px;line-height:1;cursor:pointer}',
+    // 控制条占播放器底部约 83px，面板底部留 90px 正好贴在它上沿。
+    '.hg-speed-panel{position:absolute;right:16px;bottom:90px;',
+    'width:300px;max-width:calc(100vw - 24px);box-sizing:border-box;',
+    'padding:11px 16px 14px;border-radius:12px;',
+    'background:rgba(20,20,23,.72);color:#fff;',
+    'backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);',
+    'border:1px solid rgba(255,255,255,.09);',
+    'box-shadow:0 10px 30px rgba(0,0,0,.38);',
+    'font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
+    'pointer-events:auto;user-select:none;-webkit-user-select:none;',
+    'animation:hg-speed-in .16s ease-out}',
+    '@keyframes hg-speed-in{',
+    'from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}',
+    '.hg-speed-head{display:flex;align-items:center;gap:6px;',
+    'padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.14)}',
+    '.hg-speed-back{width:24px;height:24px;flex:0 0 24px;border:0;border-radius:50%;',
+    'background:transparent;color:#fff;font-size:20px;line-height:1;cursor:pointer}',
     '.hg-speed-back:hover{background:rgba(255,255,255,.12)}',
-    '.hg-speed-head span{font-size:15px;font-weight:600}',
-    '.hg-speed-value{text-align:center;font-size:36px;font-weight:700;',
-    'padding:26px 0 22px;font-variant-numeric:tabular-nums;letter-spacing:.5px}',
-    '.hg-speed-value small{font-size:.5em;font-weight:500;margin-left:2px;opacity:.85}',
-    '.hg-speed-slider-row{display:flex;align-items:center;gap:14px}',
-    '.hg-speed-step{width:38px;height:38px;flex:0 0 38px;border:0;border-radius:50%;',
-    'background:rgba(255,255,255,.14);color:#fff;font-size:22px;line-height:1;cursor:pointer}',
+    '.hg-speed-head span{font-size:13px;font-weight:600}',
+    '.hg-speed-value{text-align:right;font-size:22px;font-weight:700;',
+    'padding:9px 2px 7px;font-variant-numeric:tabular-nums;letter-spacing:.3px}',
+    '.hg-speed-value small{font-size:.62em;font-weight:500;margin-left:2px;opacity:.85}',
+    '.hg-speed-slider-row{display:flex;align-items:center;gap:10px}',
+    '.hg-speed-step{width:26px;height:26px;flex:0 0 26px;border:0;border-radius:50%;',
+    'background:rgba(255,255,255,.14);color:#fff;font-size:17px;line-height:1;cursor:pointer}',
     '.hg-speed-step:hover{background:rgba(255,255,255,.24)}',
-    '.hg-speed-range{flex:1;min-width:0;height:4px;border-radius:2px;outline:none;',
+    '.hg-speed-range{flex:1;min-width:0;height:3px;border-radius:2px;outline:none;',
     '-webkit-appearance:none;appearance:none;cursor:pointer}',
     '.hg-speed-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;',
-    'width:18px;height:18px;border:0;border-radius:50%;background:#fff;',
+    'width:14px;height:14px;border:0;border-radius:50%;background:#fff;',
     'box-shadow:0 1px 5px rgba(0,0,0,.45);cursor:pointer}',
-    '.hg-speed-range::-moz-range-thumb{width:18px;height:18px;border:0;border-radius:50%;',
+    '.hg-speed-range::-moz-range-thumb{width:14px;height:14px;border:0;border-radius:50%;',
     'background:#fff;box-shadow:0 1px 5px rgba(0,0,0,.45);cursor:pointer}',
     // 打开面板会自动聚焦滑杆：别用 outline 画一整圈外框（不像原生倍速页），
     // 焦点提示改放在把手的光晕上，键盘用户仍看得见。
     '.hg-speed-range:focus-visible{outline:none}',
     '.hg-speed-range:focus-visible::-webkit-slider-thumb{',
-    'box-shadow:0 0 0 5px rgba(255,255,255,.22),0 1px 5px rgba(0,0,0,.45)}',
+    'box-shadow:0 0 0 4px rgba(255,255,255,.22),0 1px 5px rgba(0,0,0,.45)}',
     '.hg-speed-range:focus-visible::-moz-range-thumb{',
-    'box-shadow:0 0 0 5px rgba(255,255,255,.22),0 1px 5px rgba(0,0,0,.45)}',
-    '.hg-speed-presets{display:flex;gap:8px;justify-content:space-between;margin-top:28px}',
+    'box-shadow:0 0 0 4px rgba(255,255,255,.22),0 1px 5px rgba(0,0,0,.45)}',
+    '.hg-speed-presets{display:flex;gap:6px;justify-content:space-between;margin-top:16px}',
     '.hg-speed-preset{flex:1;min-width:0;display:flex;flex-direction:column;',
-    'align-items:center;gap:6px}',
-    '.hg-speed-preset button{width:100%;padding:9px 0;border:0;border-radius:999px;',
-    'background:rgba(255,255,255,.14);color:#fff;font:600 14px/1.2 inherit;cursor:pointer;',
+    'align-items:center;gap:4px}',
+    '.hg-speed-preset button{width:100%;padding:7px 0;border:0;border-radius:999px;',
+    'background:rgba(255,255,255,.14);color:#fff;font:600 12px/1.2 inherit;cursor:pointer;',
     'font-variant-numeric:tabular-nums}',
     '.hg-speed-preset button:hover{background:rgba(255,255,255,.24)}',
     '.hg-speed-preset button.is-active{background:#fff;color:#17171a}',
-    '.hg-speed-preset small{font-size:11px;color:rgba(255,255,255,.55);min-height:14px}',
-    '.hg-speed-foot{margin:18px 0 0;text-align:center;font-size:11px;',
-    'color:rgba(255,255,255,.42)}',
-    '@media (max-width:420px){',
-    '.hg-speed-panel{padding:14px 16px 20px}.hg-speed-value{font-size:32px;padding:20px 0 18px}',
-    '.hg-speed-presets{gap:5px;margin-top:22px}.hg-speed-preset button{font-size:13px}}'
+    '.hg-speed-preset small{font-size:10px;color:rgba(255,255,255,.55);min-height:13px}',
+    '@media (max-width:520px){',
+    '.hg-speed-panel{right:8px;bottom:78px;width:min(300px,calc(100vw - 20px));',
+    'padding:9px 12px 12px}',
+    '.hg-speed-value{font-size:20px;padding:7px 2px 6px}',
+    '.hg-speed-presets{gap:4px;margin-top:13px}.hg-speed-preset button{font-size:11px}}'
   ].join('');
 
   var mask = null;
@@ -181,8 +193,9 @@
     mask.id = MASK_ID;
     mask.hidden = true;
     var panel = el('div', 'hg-speed-panel');
+    // 非模态浮层：role=dialog 只为让上游 ignoresPlaybackShortcut 忽略面板内按键，
+    // 不设 aria-modal，视频与其它控件仍可正常交互。
     panel.setAttribute('role', 'dialog');
-    panel.setAttribute('aria-modal', 'true');
     panel.setAttribute('aria-label', '播放速度');
 
     var head = el('div', 'hg-speed-head');
@@ -237,18 +250,30 @@
       presetButtons.push(btn);
     });
     panel.appendChild(presets);
-    panel.appendChild(el('p', 'hg-speed-foot', '拖动滑杆可在 0.25× – 4.00× 间精细调节'));
+    panel.title = '拖动滑杆可在 0.25× – 4.00× 间精细调节';
 
     mask.appendChild(panel);
-    mask.addEventListener('click', function (event) {
-      if (event.target === mask) close();
-    });
+    // 初始挂 body 兜底（React 可能还没渲染出 .player-stage），open() 时移进播放器。
+    mask.classList.add('is-viewport');
     document.body.appendChild(mask);
+  }
+
+  /**
+   * 面板要贴的是播放器右下角而不是视口右下角：.player-stage 是 relative 容器，
+   * 把定位层挂进去，内嵌播放器、剧场模式、全屏播放都能自动对齐控制条上沿。
+   * React 重渲染换掉 stage 节点时，下次 open 会重新挂载。
+   */
+  function mountMask(node) {
+    var stage = node && node.closest ? node.closest('.player-stage') : null;
+    var host = stage || document.body;
+    if (mask.parentNode !== host) host.appendChild(mask);
+    mask.classList.toggle('is-viewport', !stage);
   }
 
   function open(node) {
     if (opened) return;
     trigger = node;
+    mountMask(node);
     if (node && node.tagName !== 'SELECT') node.title = '播放速度设置：拖动滑杆精细调节';
     opened = true;
     mask.hidden = false;
@@ -291,11 +316,24 @@
       var node = rateControl(event.target);
       if (node && node.tagName === 'SELECT') event.preventDefault();
     }, { capture: true, passive: false });
+    // 透明定位层不接收点击，改在捕获阶段关面板：点视频、进度条、其它控件时
+    // 面板收起，同时不拦截那次点击本身（不 preventDefault / stopPropagation）。
+    document.addEventListener('click', function (event) {
+      if (!opened) return;
+      var target = event.target;
+      if (target && target.closest && (target.closest('.hg-speed-panel')
+        || target.closest('.player-controls-rate'))) return;
+      close();
+    }, true);
     document.addEventListener('click', function (event) {
       var node = rateControl(event.target);
       if (!node) return;
       event.preventDefault();
       event.stopPropagation();
+      // React 换掉 .player-stage（切集 / 切布局）会连带卸载定位层，重置状态后重挂，
+      // 否则会出现「面板不见了但仍算打开、要连点两次才能再开」。
+      if (opened && !mask.isConnected) opened = false;
+      if (opened) { close(); return; }   // 再点倍速按钮即收起
       open(node);
     }, true);
 

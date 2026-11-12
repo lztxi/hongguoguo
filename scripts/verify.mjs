@@ -121,6 +121,20 @@ if (requireFrontend) {
     check('倍速面板不误触播放快捷键且可关闭',
       speed.includes("'dialog'") && speed.includes("event.key === 'Escape'")
       && speed.includes('function close()'));
+    check('倍速面板是播放器右下角小浮层，不铺全屏黑幕或模糊',
+      speed.includes('pointer-events:none;background:transparent')
+      && speed.includes('right:16px;bottom:90px') && speed.includes('width:300px')
+      && !speed.includes('rgba(0,0,0,.52)')
+      && !speed.includes('align-items:center;justify-content:center'));
+    check('倍速面板挂进播放器容器，内嵌/全屏都贴控制条',
+      speed.includes("closest('.player-stage')")
+      && speed.includes('is-viewport') && speed.includes('function mountMask'));
+    check('播放器容器被 React 替换后面板可自动重挂',
+      speed.includes('!mask.isConnected') && speed.includes('opened = false'));
+    check('倍速面板点面板外可关闭且不拦截播放器点击',
+      speed.includes("target.closest('.hg-speed-panel')")
+      && speed.includes('if (opened) { close(); return; }')
+      && speed.includes('pointer-events:auto'));
   }
   if (exists('app/dist-react/sidebar-collapse.js')) {
     const sc = read('app/dist-react/sidebar-collapse.js');

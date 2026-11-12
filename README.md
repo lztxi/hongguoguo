@@ -87,12 +87,18 @@ deploy/                     玩客云侧 compose + install / upgrade / rollback
 下拉框，都不能精细调速。`overlay/web/speed-panel.js` 把两者统一换成截图那样的
 「播放速度」面板（纯运行时 DOM + CSS，不改上游 React 源码）：
 
-- 点倍速按钮弹出面板：顶部返回 + 标题，中间大号 `1.60x`，下面圆形减/加按钮与
-  可拖动滑杆（`0.25×–4.00×`、步长 `0.05`），底部 `1.0（正常）/ 1.25 / 1.5 / 2.0 / 3.0`
+- 点倍速按钮在**播放器右下角、控制条上方**弹出约 300px 的半透明小浮层：顶部
+  返回 + 标题，数值 `1.60x` 靠右，下面圆形减/加按钮与可拖动滑杆
+  （`0.25×–4.00×`、步长 `0.05`），底部 `1.0（正常）/ 1.25 / 1.5 / 2.0 / 3.0`
   常用档位胶囊，当前值对应的档位高亮；
+- 定位层挂进 `.player-stage`（`position:relative`），铺满播放器但完全透明且
+  `pointer-events:none`，**不铺全屏黑幕、不做整屏模糊**，视频画面始终清晰、
+  播放器其它控件照常可点；内嵌播放器 / 剧场 / 全屏都能贴住控制条上沿，不写死
+  视口坐标（找不到容器才退回 `position:fixed` 兜底）；只有小面板自己接收事件；
 - 加减按钮步长 `0.1`，拖动滑杆实时变速，松手才写偏好与弹提示；
-- 点遮罩、返回按钮或 `Esc` 关闭；面板是 `role="dialog"`，上游
-  `ignoresPlaybackShortcut` 会自动忽略面板内按键，不会误触快进 / 切集；
+- 「点面板外」由 `document` 捕获阶段监听负责关闭（不拦截那次点击），返回按钮、
+  `Esc`、再点一次倍速按钮也能关；面板是 `role="dialog"` 但不设 `aria-modal`，
+  上游 `ignoresPlaybackShortcut` 会忽略面板内按键，不会误触快进 / 切集；
 - 状态写回优先取 React fiber 上 `PlayerControls` 的 `onRateChange`（即
   `changePlaybackRate`），React 状态、按钮文字、video 倍速、localStorage 偏好一次同步；
   找不到 fiber 时回退直接设 `video.playbackRate`，由上游 `onRateChange` 监听同步；
