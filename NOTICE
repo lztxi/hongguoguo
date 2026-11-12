@@ -50,8 +50,13 @@ NOTICE —— 来源、许可证与修改说明
                           因此不会遮挡侧栏收起按钮或主内容区海报；取源故障
                           时仅给「设置」导航按钮加一个 ::after 小橙点提示。
                           MutationObserver 负责设置页首次挂载 / React 重渲染后补挂。
-- web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本、侧栏增强与版本角标注入；
-                          注入时按文件内容附加 ?v= 指纹，避免浏览器按旧 URL 缓存一小时。
+- web/speed-panel.js     播放速度面板：把上游「点一下 +0.25」的倍速按钮 / 0.25
+                          步长下拉统一换成大数值 + 可拖滑杆(0.05 步长) + 加减按钮
+                          + 常用档位胶囊的独立面板；捕获阶段拦下原按钮点击，
+                          经 React fiber 的 onRateChange 写回状态，Esc / 返回 / 点遮罩关闭。
+- web/build-frontend.mjs  vite 构建 + 桥接生成 + 兼容脚本、侧栏增强、版本卡片与
+                          倍速面板注入；注入时按文件内容附加 ?v= 指纹，
+                          避免浏览器按旧 URL 缓存一小时。
 - Dockerfile / docker-compose.yml / .dockerignore   armv7 容器构建与内存约束。
 
 三、对上游文件的唯一修改

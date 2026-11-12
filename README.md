@@ -37,8 +37,9 @@ upstream.lock.json  ──锁定──>  两个上游的 tag + commit sha
 - `overlay/web/gen-bridge.mjs` —— 每次构建都从**新版** `preload.js` 重新生成 `bridge.js`，
   上游新增/改名 IPC 方法会自动跟上（方法数异常下降会触发断言）；
 - `app/dist-react/index.html` 的脚本注入也是每次构建重新做的，不是改过的静态文件；
-- `overlay/web/sidebar-collapse.js`、`overlay/web/version-badge.js` —— 独立运行时增强层，
-  每次构建随兼容脚本一起注入（版本信息在设置页里显示上游版本与取源故障状态）；
+- `overlay/web/sidebar-collapse.js`、`overlay/web/version-badge.js`、
+  `overlay/web/speed-panel.js` —— 独立运行时增强层，每次构建随兼容脚本一起注入
+  （版本信息在设置页显示上游版本与取源故障状态；倍速按钮改为可拖滑杆面板）；
 - `hgop/` 源文件每次从上游重新拉取，只重放 `patches.json` 的两处补丁；
   上游若改动被锚定的代码，同步脚本**报错停止**，提示人工合并，绝不覆盖。
 
@@ -79,6 +80,27 @@ deploy/                     玩客云侧 compose + install / upgrade / rollback
 顺带修掉一个「改了却看不到」的坑：这几个自制增强脚本原本继承 `max-age=3600`，
 浏览器会缓存一小时。现在 `build-frontend.mjs` 注入时按文件内容加 `?v=<8位指纹>`，
 服务端对它们返回 `no-store`，刷新页面就能拿到新版，不用 Ctrl+F5。
+
+## Web 版增强：播放速度面板
+
+上游桌面端的倍速只是个「点一下 +0.25、4 倍回 1 倍」的按钮，移动端是 0.25 步长的
+下拉框，都不能精细调速。`overlay/web/speed-panel.js` 把两者统一换成截图那样的
+「播放速度」面板（纯运行时 DOM + CSS，不改上游 React 源码）：
+
+- 点倍速按钮弹出面板：顶部返回 + 标题，中间大号 `1.60x`，下面圆形减/加按钮与
+  可拖动滑杆（`0.25×–4.00×`、步长 `0.05`），底部 `1.0（正常）/ 1.25 / 1.5 / 2.0 / 3.0`
+  常用档位胶囊，当前值对应的档位高亮；
+- 加减按钮步长 `0.1`，拖动滑杆实时变速，松手才写偏好与弹提示；
+- 点遮罩、返回按钮或 `Esc` 关闭；面板是 `role="dialog"`，上游
+  `ignoresPlaybackShortcut` 会自动忽略面板内按键，不会误触快进 / 切集；
+- 状态写回优先取 React fiber 上 `PlayerControls` 的 `onRateChange`（即
+  `changePlaybackRate`），React 状态、按钮文字、video 倍速、localStorage 偏好一次同步；
+  找不到 fiber 时回退直接设 `video.playbackRate`，由上游 `onRateChange` 监听同步；
+- 快捷键或「更多播放选项」里的下拉改速时，面板通过捕获阶段的 `ratechange` 同步数值；
+- 在 document 捕获阶段拦截倍速按钮 / select 的点击，阻止上游的 +0.25 与原生下拉
+  （React 18 事件委托挂在 `#root`，捕获阶段拦下不会触发它的 `onClick`）。
+
+由 `build-frontend.mjs` 每次构建注入 `index.html`，升级上游不会丢。
 
 ## 首次使用
 

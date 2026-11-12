@@ -41,6 +41,7 @@ const out = path.join(APP, 'dist-react');
 fs.copyFileSync(path.join(ROOT, 'web', 'web-compat.js'), path.join(out, 'web-compat.js'));
 fs.copyFileSync(path.join(ROOT, 'web', 'sidebar-collapse.js'), path.join(out, 'sidebar-collapse.js'));
 fs.copyFileSync(path.join(ROOT, 'web', 'version-badge.js'), path.join(out, 'version-badge.js'));
+fs.copyFileSync(path.join(ROOT, 'web', 'speed-panel.js'), path.join(out, 'speed-panel.js'));
 
 /**
  * 自制增强脚本不走 vite 的 [hash] 命名，浏览器按旧 URL 缓存一小时。
@@ -55,6 +56,7 @@ function stamp(name) {
 const V_COMPAT = stamp('web-compat.js');
 const V_SIDEBAR = stamp('sidebar-collapse.js');
 const V_BADGE = stamp('version-badge.js');
+const V_SPEED = stamp('speed-panel.js');
 
 const htmlPath = path.join(out, 'index.html');
 let html = fs.readFileSync(htmlPath, 'utf8');
@@ -65,7 +67,8 @@ let dirty = false;
 const refreshed = html
   .replace(/(src="\.\/web-compat\.js)(\?v=[0-9a-f]{8})?(")/g, '$1?v=' + V_COMPAT + '$3')
   .replace(/(src="\.\/sidebar-collapse\.js)(\?v=[0-9a-f]{8})?(")/g, '$1?v=' + V_SIDEBAR + '$3')
-  .replace(/(src="\.\/version-badge\.js)(\?v=[0-9a-f]{8})?(")/g, '$1?v=' + V_BADGE + '$3');
+  .replace(/(src="\.\/version-badge\.js)(\?v=[0-9a-f]{8})?(")/g, '$1?v=' + V_BADGE + '$3')
+  .replace(/(src="\.\/speed-panel\.js)(\?v=[0-9a-f]{8})?(")/g, '$1?v=' + V_SPEED + '$3');
 if (refreshed !== html) { html = refreshed; dirty = true; }
 
 if (!html.includes('web-compat.js')) {
@@ -88,6 +91,13 @@ if (!html.includes('version-badge.js')) {
   const tag = '    <script src="./version-badge.js?v=' + V_BADGE + '"></script>\n';
   const side = html.match(/ *<script src="\.\/sidebar-collapse\.js[^"]*"><\/script>/);
   if (side) html = html.replace(side[0], side[0] + '\n' + tag.replace(/\n$/, ''));
+  else html = html.replace('</head>', tag + '  </head>');
+  dirty = true;
+}
+if (!html.includes('speed-panel.js')) {
+  const tag = '    <script src="./speed-panel.js?v=' + V_SPEED + '"></script>\n';
+  const badge = html.match(/ *<script src="\.\/version-badge\.js[^"]*"><\/script>/);
+  if (badge) html = html.replace(badge[0], badge[0] + '\n' + tag.replace(/\n$/, ''));
   else html = html.replace('</head>', tag + '  </head>');
   dirty = true;
 }

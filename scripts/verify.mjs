@@ -85,16 +85,19 @@ if (requireFrontend) {
   check('dist-react/web-compat.js', exists('app/dist-react/web-compat.js'));
   check('dist-react/sidebar-collapse.js', exists('app/dist-react/sidebar-collapse.js'));
   check('dist-react/version-badge.js', exists('app/dist-react/version-badge.js'));
+  check('dist-react/speed-panel.js', exists('app/dist-react/speed-panel.js'));
   if (exists('app/dist-react/index.html')) {
     const html = read('app/dist-react/index.html');
     check('index.html 注入 bridge.js', html.includes('./bridge.js'));
     check('index.html 注入 web-compat.js', html.includes('./web-compat.js'));
     check('index.html 注入 sidebar-collapse.js', html.includes('./sidebar-collapse.js'));
     check('index.html 注入 version-badge.js', html.includes('./version-badge.js'));
+    check('index.html 注入 speed-panel.js', html.includes('./speed-panel.js'));
     check('增强脚本带内容指纹（改完刷新即生效）',
       /web-compat\.js\?v=[0-9a-f]{8}/.test(html)
       && /sidebar-collapse\.js\?v=[0-9a-f]{8}/.test(html)
-      && /version-badge\.js\?v=[0-9a-f]{8}/.test(html));
+      && /version-badge\.js\?v=[0-9a-f]{8}/.test(html)
+      && /speed-panel\.js\?v=[0-9a-f]{8}/.test(html));
     check('无内联脚本（CSP）', !/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i.test(html));
   }
   if (exists('app/dist-react/version-badge.js')) {
@@ -105,6 +108,19 @@ if (requireFrontend) {
       badge.includes('.settings-container') && badge.includes('settings-card')
       && badge.includes('MutationObserver') && !badge.includes('position:fixed'));
     check('版本角标语法', syntax('app/dist-react/version-badge.js') === null);
+  }
+  if (exists('app/dist-react/speed-panel.js')) {
+    const speed = read('app/dist-react/speed-panel.js');
+    check('倍速面板语法', syntax('app/dist-react/speed-panel.js') === null);
+    check('倍速面板含滑杆、加减与预设档位',
+      speed.includes("range.type = 'range'") && speed.includes('hg-speed-step')
+      && speed.includes('PRESETS') && speed.includes('data-rate'));
+    check('倍速面板拦截上游循环点击并复用其回调',
+      speed.includes("addEventListener('click'") && speed.includes('stopPropagation()')
+      && speed.includes('__reactFiber$') && speed.includes('props.onRateChange'));
+    check('倍速面板不误触播放快捷键且可关闭',
+      speed.includes("'dialog'") && speed.includes("event.key === 'Escape'")
+      && speed.includes('function close()'));
   }
   if (exists('app/dist-react/sidebar-collapse.js')) {
     const sc = read('app/dist-react/sidebar-collapse.js');
@@ -140,6 +156,7 @@ if (exists('server/index.js')) {
   check('health 暴露 idle 状态', srv.includes('idle: idleSnapshot()'));
   check('自制增强脚本禁止缓存，改完刷新即生效',
     srv.includes('NO_STORE_FILES.has(rel)') && srv.includes("'/version-badge.js'")
+    && srv.includes("'/speed-panel.js'")
     && srv.includes("'/sidebar-collapse.js'") && !srv.includes("rel === '/bridge.js' || rel === '/web-compat.js'"));
 }
 
@@ -197,6 +214,9 @@ if (exists('server/index.js')) {
   const fe = read('web/build-frontend.mjs');
   check('前端构建注入版本角标',
     fe.includes("'version-badge.js'") && fe.includes("html.includes('version-badge.js')"));
+  check('前端构建注入倍速面板并刷新指纹',
+    fe.includes("'speed-panel.js'") && fe.includes('V_SPEED')
+    && fe.includes("html.includes('speed-panel.js')"));
   const checkWf = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'check-upstream.yml'), 'utf8');
   check('每次 push 也检查上游', checkWf.includes('push:') && checkWf.includes('paths-ignore'));
   const buildWf = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build-image.yml'), 'utf8');
