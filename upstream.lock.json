@@ -1,14 +1,14 @@
 {
   "comment": "当前镜像所基于的上游版本。运行 `node scripts/check-upstream.mjs --write` 可更新到最新发行版；CI 会为每次变化自动开 PR。",
-  "checkedAt": "2026-11-12T07:48:43.295Z",
+  "checkedAt": "2026-11-13T12:04:08.843Z",
   "jackotom": {
     "repo": "jackotom/hongguo-drama",
-    "tag": "v7.1",
-    "sha": "bdab9d6158e07524f234f88c1168f20baa2cd507",
+    "tag": "v7.2",
+    "sha": "26a926f03f5038257e14b932b4762aab2f537ee9",
     "license": "GPL-3.0",
     "role": "桌面版主进程 / React 前端 / preload 桥接来源",
     "note": "6.4 已验证与全部定制层兼容（两处 hgop 补丁重放成功、桥接自动生成 112 invoke，新增 setInterfaceLanguage）。玩客云 9636 自 2026-11-08 起采用纯 compose 部署 GHCR 镜像。",
-    "publishedAt": "2026-11-12T06:10:02Z"
+    "publishedAt": "2026-11-13T07:32:56Z"
   },
   "zfdang": {
     "repo": "zfdang/hongguo-open-player",
