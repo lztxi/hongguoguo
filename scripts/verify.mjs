@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -187,9 +188,40 @@ if (exists('server/index.js')) {
   check('自动清理与空闲降级共用内存清理实现',
     (srv.match(/purgePlaybackMemory\(\)/g) || []).length >= 2
     && srv.includes('hgop.plans.clear()') && srv.includes('fragmentCache'));
-  check('完整 MP4 成片由独立开关控制（默认删，设 0 保留）',
+  check('完整视频成片由独立开关控制（默认删，设 0 保留）',
     srv.includes('HONGGUO_PLAYBACK_PURGE_MOVIES') && srv.includes('PURGE_MOVIES_ENABLED')
     && srv.includes('MOVIE_RE') && srv.includes('TEMP_DOWNLOAD_RE'));
+  // 直接把源码里的后缀集合抽出来构造正则做行为验证，而不是只 grep 关键字
+  const extBlock = srv.match(/const MOVIE_EXT = \[([\s\S]*?)\];/);
+  const movieExt = extBlock
+    ? [...extBlock[1].matchAll(/'([a-z0-9]+)'/g)].map(m => m[1]) : [];
+  const movieRe = movieExt.length
+    ? new RegExp(`\\.(?:${movieExt.join('|')})$`, 'i') : null;
+  check('成片清理覆盖常见视频后缀（不止 mp4）',
+    !!movieRe && movieExt.length >= 15 && movieExt.includes('mp4')
+    && ['a.mp4', 'b.mkv', 'c.mov', 'd.ts', 'e.webm', 'f.flv']
+      .every(f => movieRe.test(f)));
+  check('成片清理不误伤字幕 / 封面 / 评论导出等元数据',
+    !!movieRe && ['x.reviews.json', 'x.srt', 'x.ass', 'x.jpg', 'x.nfo', 'x.mp4.part']
+      .every(f => !movieRe.test(f)));
+  // 把源码里的常量段原样执行，直接验证两条真实正则的匹配行为
+  const constBlock = srv.match(/const MOVIE_EXT = \[[\s\S]*?const TEMP_WORKDIR_RE = [^;]+;/);
+  let realRe = null;
+  if (constBlock) {
+    const ctx = {};
+    vm.createContext(ctx);
+    vm.runInContext(constBlock[0]
+      + '\n;globalThis.__purgeRe = { movie: MOVIE_RE, temp: TEMP_DOWNLOAD_RE };', ctx);
+    realRe = ctx.__purgeRe;
+  }
+  check('半成品白名单跟随视频后缀集合放宽（真实正则）',
+    !!realRe && ['x.mkv.part', 'x.webm.part', 'x.mp4.part', '.tmp_a.mkv',
+                 'x.enc.tmp', 'x.enc.tmp.decoded'].every(f => realRe.temp.test(f))
+    && ['x.reviews.json', 'x.srt', 'x.jpg'].every(f => !realRe.temp.test(f))
+    && ['a.mkv', 'b.webm', 'c.mp4'].every(f => realRe.movie.test(f))
+    && !realRe.movie.test('x.srt'));
+  check('health 暴露成片后缀清单',
+    srv.includes('movieExt: MOVIE_EXT'));
   check('观看记录 / 账号文件不在任何清理目标里',
     !/path\.join\(DATA_DIR,\s*'data\.json'\)/.test(srv)
     && !/path\.join\(DATA_DIR,\s*'account'\)/.test(srv)
@@ -206,7 +238,8 @@ if (exists('server/index.js')) {
   const badge = exists('web/version-badge.js') ? read('web/version-badge.js') : '';
   check('设置页展示清理状态与「立即清理」按钮',
     badge.includes('cachePurge') && badge.includes("'/api/cache/purge'")
-    && badge.includes('立即清理') && badge.includes('cp.movies') && badge.includes('lastDeleted'));
+    && badge.includes('立即清理') && badge.includes('cp.movies')
+    && badge.includes('cp.movieExt') && badge.includes('lastDeleted'));
   const deployEnv = fs.readFileSync(path.join(ROOT, 'deploy', '.env.example'), 'utf8');
   check('部署配置暴露四个新开关',
     deployEnv.includes('PLAYBACK_PURGE=1') && deployEnv.includes('PLAYBACK_PURGE_MINUTES=60')

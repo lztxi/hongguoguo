@@ -973,17 +973,20 @@ function maybeGc(reason) {
  * 播放期间攒下的可再生文件也会被收掉。
  *
  * 清理范围（2026-11-15 按需求调整）：
- *   data/downloads/ 下的 *.mp4 完整成片 **也会删**（默认开），以及下载中断留下的
- *   .enc.tmp / .mp4.part / .tmp_*.mp4；data.json（观看记录/播放进度）、
- *   account/（账号）、safe-storage.key、device.json 一律保留。
- *   compat-cache / cache / logs 是纯再生目录；/tmp 只认
- *   hongguo-online-*、hongguo-decrypt-* 两个上游 mkdtemp 前缀。
+ *   data/downloads/ 下的完整视频成片 **也会删**（默认开），按常见视频后缀集合判断，
+ *   不再写死 .mp4 —— 上游自己产出的成片确实全是 .mp4（HLS/加密源也会 remux 成 MP4），
+ *   但用户手动放进来的 mkv/mov/avi/ts/webm 等同样该被回收；
+ *   字幕 / 封面 / *.reviews.json 等元数据文件不在集合里，一律保留。
+ *   外加下载中断留下的 .enc.tmp、任意视频后缀的 .part、.tmp_<视频后缀>；
+ *   data.json（观看记录/播放进度）、account/（账号）、safe-storage.key、
+ *   device.json 一律保留。compat-cache / cache / logs 是纯再生目录（不看后缀全清）；
+ *   /tmp 只认 hongguo-online-*、hongguo-decrypt-* 两个上游 mkdtemp 前缀。
  *   所有候选文件还需「≥10 分钟未修改」，避免误删正在写入的转码/下载产物。
  *   删除清单会写进容器日志，并保留在 /api/health 的 cachePurge.lastDeleted。
  *
  * HONGGUO_PLAYBACK_PURGE=0 一键禁用；HONGGUO_PLAYBACK_PURGE_MINUTES 改阈值（5~1440）；
  * HONGGUO_PLAYBACK_PURGE_DISK=0 可只清内存不清磁盘；
- * HONGGUO_PLAYBACK_PURGE_MOVIES=0 只清可再生缓存，保留完整 MP4 成片（后悔药开关）。
+ * HONGGUO_PLAYBACK_PURGE_MOVIES=0 只清可再生缓存，保留完整视频成片（后悔药开关）。
  */
 const PURGE_ENABLED = process.env.HONGGUO_PLAYBACK_PURGE !== '0';
 const PURGE_MINUTES = Math.min(24 * 60, Math.max(5,
@@ -994,9 +997,21 @@ const PURGE_MOVIES_ENABLED = process.env.HONGGUO_PLAYBACK_PURGE_MOVIES !== '0';
 const PURGE_FILE_MIN_AGE_MS = 10 * 60 * 1000;
 const PURGE_LOG_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const DATA_DIR = shim.__web.dataDir;
-// 半成品文件名；完整 *.mp4 由独立的开关 PURGE_MOVIES_ENABLED 控制。
-const TEMP_DOWNLOAD_RE = /(?:\.enc\.tmp(?:\.decoded)?|\.mp4\.part)$|^\.tmp_.*\.mp4$/;
-const MOVIE_RE = /\.mp4$/i;
+// 常见视频容器后缀。上游把 HLS(m3u8) / CENC / bytevc2 / spadeA 源统一 remux、
+// 解密成 *.mp4，所以「程序自己下载的成片」只会是 mp4；这里仍按后缀集合判断，
+// 是为了把用户手动放进 downloads/ 的其它格式视频一起回收，也防上游将来换封装。
+// 刻意不含 .json / .srt / .jpg 等元数据后缀，它们永远不进删除集合。
+const MOVIE_EXT = [
+  'mp4', 'm4v', 'mkv', 'mov', 'avi', 'ts', 'm2ts', 'mts', 'webm',
+  'flv', 'f4v', 'wmv', 'mpg', 'mpeg', '3gp', '3g2', 'ogv', 'vob',
+  'rmvb', 'rm', 'asf', 'divx',
+];
+const MOVIE_SUFFIX = `(?:${MOVIE_EXT.join('|')})`;
+const MOVIE_RE = new RegExp(`\\.${MOVIE_SUFFIX}$`, 'i');
+// 半成品：.enc.tmp / .enc.tmp.decoded / 任意视频后缀的 .part / .tmp_*.<视频后缀>
+const TEMP_DOWNLOAD_RE = new RegExp(
+  `(?:\\.enc\\.tmp(?:\\.decoded)?|\\.${MOVIE_SUFFIX}\\.part)$`
+  + `|^\\.tmp_.*\\.${MOVIE_SUFFIX}$`, 'i');
 const TEMP_WORKDIR_RE = /^hongguo-(?:online|decrypt)-/;
 
 let lastPlaybackAt = Date.now();
@@ -1026,6 +1041,7 @@ function purgeSnapshot() {
     enabled: PURGE_ENABLED,
     disk: PURGE_DISK_ENABLED,
     movies: PURGE_MOVIES_ENABLED,
+    movieExt: MOVIE_EXT,
     idleMinutes: PURGE_MINUTES,
     noPlaybackSec: Math.round(since / 1000),
     nextInSec: PURGE_ENABLED && !purgeRunning
@@ -1042,10 +1058,11 @@ function purgeSnapshot() {
     failures: lastPurgeFailures,
     lastError: lastPurgeError,
     lastDeleted: lastPurgeDeleted,
-    // 播放记录 / 账号无论开关如何都不删；完整 MP4 只在 movies=1 时才清
+    // 播放记录 / 账号 / 元数据无论开关如何都不删；完整视频成片只在 movies=1 时才清
     keeps: PURGE_MOVIES_ENABLED
-      ? ['data.json', 'account/*', 'account-session.bin', 'safe-storage.key', 'device.json']
-      : ['downloads/*.mp4', 'data.json', 'account/*', 'safe-storage.key'],
+      ? ['data.json', 'account/*', 'account-session.bin', 'safe-storage.key', 'device.json',
+         'downloads/ 下字幕、封面、*.reviews.json 等元数据']
+      : ['downloads/ 下完整视频成片', 'data.json', 'account/*', 'safe-storage.key'],
   };
 }
 
@@ -1271,7 +1288,8 @@ server.listen(PORT, HOST, () => {
   log(`[idle] 空闲降级${IDLE_SLEEP_ENABLED ? `已启用：无业务请求 ${IDLE_SLEEP_MINUTES} 分钟后清缓存 + full GC` : '已禁用'}`);
   log(`[purge] 播放空闲清理${PURGE_ENABLED
     ? `已启用：${PURGE_MINUTES} 分钟无播放自动清内存 + 磁盘缓存${PURGE_DISK_ENABLED ? '' : '（仅内存）'}`
-    : '已禁用'}；完整 MP4 成片${PURGE_MOVIES_ENABLED ? '也会删除' : '保留'}；观看记录 / 账号永不删除`);
+    : '已禁用'}；完整视频成片（${MOVIE_EXT.length} 种后缀）${PURGE_MOVIES_ENABLED ? '也会删除' : '保留'}`
+    + `；字幕 / 封面 / 元数据、观看记录 / 账号永不删除`);
 });
 
 const keepAlive = setInterval(() => { log(`[心跳] SSE ${clients.size} 客户端, RSS ${Math.round(process.memoryUsage().rss / 1048576)}MB`); }, 5 * 60 * 1000);
