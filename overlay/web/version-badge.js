@@ -18,6 +18,8 @@
  *   不占布局、不遮挡），点进去看详情；恢复后自动移除；
  * - 页面加载时请求一次 /api/health，之后每 30s 轮询（该接口不计入活跃度，
  *   不会阻止空闲降级）；切回标签页时立即刷新一次；请求失败保留上一次状态；
+ * - 同一张卡片显示「1 小时无播放自动清缓存」的状态（上次清理 / 释放量 / 距下次），
+ *   并提供「立即清理」按钮走 POST /api/cache/purge；正在播放时服务端返回 409；
  * - 外部脚本 + 动态 <style>，符合首页 CSP（script-src 'self' / style-src 'unsafe-inline'）。
  */
 (function () {
@@ -39,6 +41,7 @@
     '.hg-version-row:last-child{border-bottom:0}',
     '.hg-version-row b{font-weight:600;color:var(--text-primary);text-align:right;',
     'word-break:break-all;font-variant-numeric:tabular-nums}',
+    '.hg-version-card .preset-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
     // 故障时「设置」按钮右上角的小橙点：纯伪元素，不改变布局也不遮挡任何控件
     '.sidebar-item[data-hg-alert="1"],.compact-navigation button[data-hg-alert="1"]{position:relative}',
     '.sidebar-item[data-hg-alert="1"]::after,.compact-navigation button[data-hg-alert="1"]::after{',
@@ -50,10 +53,12 @@
   var dot = null;
   var summary = null;
   var hint = null;
+  var cacheHint = null;
   var alertBox = null;
   var detail = null;
   var toggleBtn = null;
   var refreshBtn = null;
+  var purgeBtn = null;
   var expanded = false;
   var lastInfo = null;
   var alertDirty = true;   // 故障状态变化后需要重新标记导航按钮
@@ -80,6 +85,50 @@
     row.appendChild(el('span', '', key));
     row.appendChild(el('b', '', value));
     detail.appendChild(row);
+  }
+
+  function fmtSec(sec) {
+    var s = Math.max(0, Math.floor(Number(sec) || 0));
+    if (s < 60) return s + ' 秒';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + ' 分钟';
+    return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '尚未清理';
+    try {
+      return new Date(iso).toLocaleString('zh-CN', { hour12: false });
+    } catch (_) { return String(iso).replace('T', ' ').slice(0, 19); }
+  }
+
+  /** 设置页「立即清理」：与自动清理共用同一套白名单，播放中会被服务端拒绝。 */
+  function purgeNow() {
+    if (!purgeBtn || purgeBtn.disabled) return;
+    purgeBtn.disabled = true;
+    var old = purgeBtn.textContent;
+    purgeBtn.textContent = '清理中…';
+    var restore = function (label) {
+      purgeBtn.textContent = label;
+      window.setTimeout(function () {
+        purgeBtn.disabled = false;
+        purgeBtn.textContent = old;
+      }, 2200);
+    };
+    try {
+      fetch('/api/cache/purge', { method: 'POST', cache: 'no-store' })
+        .then(function (r) {
+          return r.json().catch(function () { return {}; })
+            .then(function (body) { return { status: r.status, body: body }; });
+        })
+        .then(function (out) {
+          if (out.status === 409) restore('正在播放');
+          else if (out.body && out.body.ok === false) restore('清理失败');
+          else restore('已清理');
+          refresh();
+        })
+        .catch(function () { restore('清理失败'); });
+    } catch (_) { restore('清理失败'); }
   }
 
   /** 与设置页其它卡片完全同构：section.settings-card > div.settings-group。 */
@@ -122,7 +171,14 @@
       toggleBtn.textContent = expanded ? '收起详情' : '详细信息';
     });
     actions.appendChild(toggleBtn);
+    purgeBtn = el('button', 'btn btn-outline btn-sm', '立即清理');
+    purgeBtn.type = 'button';
+    purgeBtn.addEventListener('click', purgeNow);
+    actions.appendChild(purgeBtn);
     group.appendChild(actions);
+
+    cacheHint = el('p', 'settings-hint', '自动缓存清理：读取中…');
+    group.appendChild(cacheHint);
 
     detail = el('div', 'hg-version-rows');
     detail.hidden = true;
@@ -217,6 +273,24 @@
     }
     hint.textContent = '镜像更新只拉已构建版本；上游升级需合并升级 PR 后重新出镜像。';
 
+    var cp = info && info.cachePurge;
+    if (cacheHint) {
+      if (!cp || !cp.enabled) {
+        cacheHint.textContent = '自动缓存清理已关闭（在 .env 里设 PLAYBACK_PURGE=1 可开启）。';
+      } else {
+        var next = cp.running ? '正在清理…'
+          : (cp.nextInSec == null ? '—' : fmtSec(cp.nextInSec));
+        var lastPart = cp.count
+          ? fmtTime(cp.lastAt) + ' · 释放 '
+            + Number(cp.freedMB || 0).toFixed(1) + 'MB（'
+            + (cp.files || 0) + ' 个临时文件 / ' + (cp.memoryItems || 0) + ' 项内存缓存）'
+          : '尚未清理过';
+        cacheHint.textContent = cp.idleMinutes
+          + ' 分钟没播放就自动清缓存（完整视频与观看记录不动）　·　上次：'
+          + lastPart + '　·　距下次：' + next;
+      }
+    }
+
     addRow('应用上游', (jackotom || '?') + ' · jackotom/hongguo-drama');
     addRow('播放内核', (zfdang || '?') + ' · zfdang/hongguo-open-player');
     addRow('定制层修订', overlay);
@@ -229,6 +303,18 @@
       addRow('连续失败 / 自动重试', (st.failures || 0) + ' 次 / ' + (st.retries || 0) + ' 次');
       if (st.cooldownRemainingSec > 0) {
         addRow('预热退避剩余', st.cooldownRemainingSec + ' 秒（期间不重复取址）');
+      }
+    }
+    if (cp) {
+      addRow('自动缓存清理', cp.enabled
+        ? (cp.idleMinutes + ' 分钟无播放' + (cp.disk ? ' · 含磁盘' : ' · 仅内存'))
+        : '已关闭');
+      if (cp.enabled) {
+        addRow('已无播放 / 距下次',
+          fmtSec(cp.noPlaybackSec) + ' / ' + (cp.nextInSec == null ? '—' : fmtSec(cp.nextInSec)));
+        addRow('累计清理 / 上次释放',
+          (cp.count || 0) + ' 次 / ' + Number(cp.freedMB || 0).toFixed(1) + 'MB');
+        if (cp.lastError) addRow('上次清理异常', String(cp.lastError));
       }
     }
     addRow('说明', '上游升级需合并升级 PR 后重新出镜像');

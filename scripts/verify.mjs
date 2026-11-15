@@ -174,6 +174,39 @@ if (exists('server/index.js')) {
     && srv.includes("'/sidebar-collapse.js'") && !srv.includes("rel === '/bridge.js' || rel === '/web-compat.js'"));
 }
 
+// 7.5 播放空闲清理（1 小时无播放 → 清内存 + 清磁盘可再生缓存，绝不删用户数据）
+if (exists('server/index.js')) {
+  const srv = read('server/index.js');
+  check('播放空闲阈值可配置且可一键禁用',
+    srv.includes('HONGGUO_PLAYBACK_PURGE_MINUTES') && srv.includes("HONGGUO_PLAYBACK_PURGE !== '0'"));
+  check('播放计时独立于 idle 活跃度',
+    srv.includes('function isPlaybackPath(') && srv.includes('if (isPlaybackPath(pathname)) notePlayback()')
+    && srv.includes("p.startsWith('/hgop/stream/')") && srv.includes('lastPlaybackAt'));
+  check('正在播放时持续刷新计时且不清理',
+    srv.includes('if (isBusy()) { notePlayback(); return; }') && srv.includes("skipped: 'busy'"));
+  check('自动清理与空闲降级共用内存清理实现',
+    (srv.match(/purgePlaybackMemory\(\)/g) || []).length >= 2
+    && srv.includes('hgop.plans.clear()') && srv.includes('fragmentCache'));
+  check('磁盘清理只认可再生白名单，完整 mp4 不在其中',
+    srv.includes('TEMP_DOWNLOAD_RE') && srv.includes('\\.mp4\\.part')
+    && srv.includes("'compat-cache'") && !srv.includes("name.endsWith('.mp4')")
+    && !srv.includes('rm(dir'));
+  check('逐文件删除、跳过符号链接、带最小年龄保护',
+    srv.includes('ent.isFile()') && srv.includes('fsp.lstat(p)')
+    && srv.includes('PURGE_FILE_MIN_AGE_MS') && srv.includes('await fsp.unlink(p)'));
+  check('/tmp 临时目录只认上游固定前缀',
+    srv.includes('TEMP_WORKDIR_RE') && srv.includes('hongguo-(?:online|decrypt)-'));
+  check('health 暴露清理状态 + 设置页可手动触发',
+    srv.includes('cachePurge: purgeSnapshot()') && srv.includes("'/api/cache/purge'"));
+  const badge = exists('web/version-badge.js') ? read('web/version-badge.js') : '';
+  check('设置页展示清理状态与「立即清理」按钮',
+    badge.includes('cachePurge') && badge.includes("'/api/cache/purge'") && badge.includes('立即清理'));
+  const deployEnv = fs.readFileSync(path.join(ROOT, 'deploy', '.env.example'), 'utf8');
+  check('部署配置暴露三个新开关',
+    deployEnv.includes('PLAYBACK_PURGE=1') && deployEnv.includes('PLAYBACK_PURGE_MINUTES=60')
+    && deployEnv.includes('PLAYBACK_PURGE_DISK=1'));
+}
+
 // 8. 连播预热（换集秒开：修掉「只预热 1 集 + 后一个被丢弃」与 90s TTL 过期）
 if (exists('server/index.js')) {
   const srv = read('server/index.js');

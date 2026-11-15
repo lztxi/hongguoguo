@@ -22,6 +22,10 @@ services:
       HONGGUO_IDLE_SLEEP_MINUTES: "${IDLE_SLEEP_MINUTES:-30}"
       # 设为 0 可一键禁用空闲降级，回到旧行为
       HONGGUO_IDLE_SLEEP: "${IDLE_SLEEP:-1}"
+      # 1 小时没播放视频 → 自动清内存 + 磁盘可再生缓存；完整 mp4 / 观看记录 / 账号不动
+      HONGGUO_PLAYBACK_PURGE: "${PLAYBACK_PURGE:-1}"
+      HONGGUO_PLAYBACK_PURGE_MINUTES: "${PLAYBACK_PURGE_MINUTES:-60}"
+      HONGGUO_PLAYBACK_PURGE_DISK: "${PLAYBACK_PURGE_DISK:-1}"
       # 连播预热：提前备好后续 3 集的播放计划；1=旧行为，0=禁用
       HONGGUO_HGOP_WARM_DEPTH: "${HONGGUO_HGOP_WARM_DEPTH:-3}"
       # 计划存活 10 分钟，避免一集没看完预热就过期

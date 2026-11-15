@@ -13,6 +13,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const Module = require('node:module');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
@@ -855,11 +856,11 @@ function idleSnapshot() {
   };
 }
 
-function enterIdleSleep() {
-  sleeping = true;
-  sleepCount++;
-  lastSleepAt = Date.now();
-  const before = mb(process.memoryUsage().rss);
+/**
+ * 清掉全部「可再生」的内存播放缓存。空闲降级与「1 小时无播放」清理共用同一份实现，
+ * 保证两条路径不会漏掉上游内核后来新增的 Map。
+ */
+function purgePlaybackMemory() {
   let dropped = 0;
   try {
     if (hgop) {
@@ -879,6 +880,22 @@ function enterIdleSleep() {
   } catch (error) {
     log('[idle] 清缓存跳过:', error?.message || error);
   }
+  // 上游主进程另有一份「整集读取」缓存（上限 300MB），它自己的 clear-online-cache
+  // 会顺带删掉 /tmp/hongguo-online-* 临时目录。只在确认无播放时才调用，
+  // 老版本上游没注册该通道就静默跳过。
+  if (shim.__web.hasChannel('clear-online-cache')) {
+    try { Promise.resolve(shim.__web.invoke('clear-online-cache')).catch(() => {}); }
+    catch { /* 上游旧版或通道已注销 */ }
+  }
+  return dropped;
+}
+
+function enterIdleSleep() {
+  sleeping = true;
+  sleepCount++;
+  lastSleepAt = Date.now();
+  const before = mb(process.memoryUsage().rss);
+  const dropped = purgePlaybackMemory();
   lastDropCount = dropped;
   // 连续两次 full GC：V8 需要多轮标记才能收干净跨代引用
   if (typeof global.gc === 'function') {
@@ -947,10 +964,186 @@ function maybeGc(reason) {
   }
 }
 
+// ------------------------------- 1 小时没有播放视频 → 自动清理可再生的磁盘缓存
+/**
+ * 和上面的「空闲降级」是两套独立判定：
+ *   - 空闲降级：30 分钟**没有任何业务请求** → 只清内存 + full GC（心跳/SSE 不算）；
+ *   - 本功能：默认 60 分钟**没有播放视频** → 清内存 + 清磁盘缓存 + full GC。
+ * 浏览剧集、搜索、翻页都不算播放，所以页面一直开着但一小时没点开视频，
+ * 播放期间攒下的可再生文件也会被收掉。
+ *
+ * 安全边界（绝不碰用户数据）：
+ *   data/downloads/ 下只删下载中断留下的 .enc.tmp / .mp4.part / .tmp_*.mp4，
+ *   完整的 *.mp4 成片、data.json（观看记录）、account/（账号）、safe-storage.key
+ *   一律保留；compat-cache / cache / logs 是纯再生目录；/tmp 只认
+ *   hongguo-online-*、hongguo-decrypt-* 两个上游 mkdtemp 前缀。
+ *   所有候选文件还需「≥10 分钟未修改」，避免误删正在写入的转码产物。
+ *
+ * HONGGUO_PLAYBACK_PURGE=0 一键禁用；HONGGUO_PLAYBACK_PURGE_MINUTES 改阈值（5~1440）；
+ * HONGGUO_PLAYBACK_PURGE_DISK=0 可只清内存不清磁盘。
+ */
+const PURGE_ENABLED = process.env.HONGGUO_PLAYBACK_PURGE !== '0';
+const PURGE_MINUTES = Math.min(24 * 60, Math.max(5,
+  Number(process.env.HONGGUO_PLAYBACK_PURGE_MINUTES || 60) || 60));
+const PURGE_MS = PURGE_MINUTES * 60 * 1000;
+const PURGE_DISK_ENABLED = process.env.HONGGUO_PLAYBACK_PURGE_DISK !== '0';
+const PURGE_FILE_MIN_AGE_MS = 10 * 60 * 1000;
+const PURGE_LOG_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const DATA_DIR = shim.__web.dataDir;
+// 只有「半成品」文件名能进删除白名单；完整的 xxx.mp4 永远不匹配。
+const TEMP_DOWNLOAD_RE = /(?:\.enc\.tmp(?:\.decoded)?|\.mp4\.part)$|^\.tmp_.*\.mp4$/;
+const TEMP_WORKDIR_RE = /^hongguo-(?:online|decrypt)-/;
+
+let lastPlaybackAt = Date.now();
+let purgeRunning = false;
+let purgeCount = 0;
+let lastPurgeAt = 0;
+let lastPurgeReason = null;
+let lastPurgeFreed = 0;
+let lastPurgeFiles = 0;
+let lastPurgeMemory = 0;
+let lastPurgeFailures = 0;
+let lastPurgeError = null;
+
+function notePlayback() { lastPlaybackAt = Date.now(); }
+
+/** 真正代表「在放视频」的请求；浏览 / 设置 / 心跳都不算。 */
+function isPlaybackPath(p) {
+  return p.startsWith('/hgop/stream/') || p.startsWith('/hgop/prefetch/')
+    || p.startsWith('/__stream/') || p.startsWith('/__local/')
+    || p === '/api/ipc/prepare-online-play';
+}
+
+function purgeSnapshot() {
+  const since = Date.now() - lastPlaybackAt;
+  return {
+    enabled: PURGE_ENABLED,
+    disk: PURGE_DISK_ENABLED,
+    idleMinutes: PURGE_MINUTES,
+    noPlaybackSec: Math.round(since / 1000),
+    nextInSec: PURGE_ENABLED && !purgeRunning
+      ? Math.max(0, Math.ceil((PURGE_MS - since) / 1000)) : null,
+    running: purgeRunning,
+    busy: isBusy(),
+    count: purgeCount,
+    lastAt: lastPurgeAt ? new Date(lastPurgeAt).toISOString() : null,
+    lastReason: lastPurgeReason,
+    freedMB: mb(lastPurgeFreed),
+    freedBytes: lastPurgeFreed,
+    files: lastPurgeFiles,
+    memoryItems: lastPurgeMemory,
+    failures: lastPurgeFailures,
+    lastError: lastPurgeError,
+    keeps: ['downloads/*.mp4', 'data.json', 'account/*', 'safe-storage.key'],
+  };
+}
+
+/** 逐文件判断白名单 + 最小年龄，绝不整目录 rm -rf，也不跟随符号链接。 */
+async function sweepFiles(dir, accept, depth, minAgeMs) {
+  const out = { freed: 0, files: 0, failures: 0 };
+  let entries;
+  try { entries = await fsp.readdir(dir, { withFileTypes: true }); }
+  catch { return out; }   // 目录不存在是常态（线上 compat-cache 通常是空的）
+  for (const ent of entries) {
+    const p = path.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      if (depth > 0) {
+        const sub = await sweepFiles(p, accept, depth - 1, minAgeMs);
+        out.freed += sub.freed; out.files += sub.files; out.failures += sub.failures;
+      }
+      continue;
+    }
+    if (!ent.isFile() || !accept(ent.name)) continue;
+    try {
+      const st = await fsp.lstat(p);
+      if (Date.now() - st.mtimeMs < minAgeMs) continue;  // 可能正在写，留给下次
+      await fsp.unlink(p);
+      out.freed += st.size;
+      out.files++;
+    } catch { out.failures++; }
+  }
+  return out;
+}
+
+async function purgeDiskCaches() {
+  const out = { freed: 0, files: 0, failures: 0 };
+  const add = r => {
+    out.freed += r.freed; out.files += r.files; out.failures += r.failures;
+  };
+  const targets = [
+    [path.join(DATA_DIR, 'compat-cache'), () => true, 0, PURGE_FILE_MIN_AGE_MS],
+    [path.join(DATA_DIR, 'cache'), () => true, 1, PURGE_FILE_MIN_AGE_MS],
+    [path.join(DATA_DIR, 'downloads'), name => TEMP_DOWNLOAD_RE.test(name), 4, PURGE_FILE_MIN_AGE_MS],
+    [path.join(DATA_DIR, 'logs'), name => /\.log(?:\.gz)?$/.test(name), 1, PURGE_LOG_MIN_AGE_MS],
+  ];
+  for (const [dir, accept, depth, age] of targets) add(await sweepFiles(dir, accept, depth, age));
+
+  // 上游在线播放 / 兼容转码用 mkdtemp 在 /tmp 下建的临时目录（容器可写层，
+  // 不重启就一直占着磁盘）。只认两个固定前缀，文件同样要满足最小年龄。
+  let tmpEntries = [];
+  try { tmpEntries = await fsp.readdir(os.tmpdir(), { withFileTypes: true }); }
+  catch { /* /tmp 不可读时跳过 */ }
+  for (const ent of tmpEntries) {
+    if (!ent.isDirectory() || !TEMP_WORKDIR_RE.test(ent.name)) continue;
+    const p = path.join(os.tmpdir(), ent.name);
+    add(await sweepFiles(p, () => true, 2, PURGE_FILE_MIN_AGE_MS));
+    try { await fsp.rmdir(p); } catch { /* 还有文件在写，留到下次 */ }
+  }
+  return out;
+}
+
+async function runPlaybackPurge(reason) {
+  if (purgeRunning) return { ok: false, skipped: 'running', state: purgeSnapshot() };
+  // 播放 / 预热 / 分片进行中一律不动，避免看到一半被清掉预缓冲
+  if (isBusy()) {
+    return { ok: false, skipped: 'busy', error: '正在播放或预热中，稍后再试', state: purgeSnapshot() };
+  }
+  purgeRunning = true;
+  const started = Date.now();
+  let memoryItems = 0;
+  let disk = { freed: 0, files: 0, failures: 0 };
+  let error = null;
+  try {
+    if (PURGE_DISK_ENABLED) disk = await purgeDiskCaches();
+    memoryItems = purgePlaybackMemory();
+    if (typeof global.gc === 'function' && Date.now() - lastGcAt > 120000) {
+      try { global.gc(); global.gc(); gcCount += 2; lastGcAt = Date.now(); } catch { /* 未开 --expose-gc */ }
+    }
+  } catch (e) {
+    error = e?.message || String(e);
+  } finally {
+    purgeRunning = false;
+    purgeCount++;
+    lastPurgeAt = Date.now();
+    lastPurgeReason = reason;
+    lastPurgeFreed = disk.freed;
+    lastPurgeFiles = disk.files;
+    lastPurgeFailures = disk.failures;
+    lastPurgeMemory = memoryItems;
+    lastPurgeError = error;
+    // 重新计时，否则 30s 后的下一轮管家会因为「仍然满足 1 小时」反复清理。
+    // 任何一次真实播放请求都会再次刷新这个时间戳。
+    lastPlaybackAt = Date.now();
+  }
+  log(`[purge] ${reason} · ${PURGE_MINUTES} 分钟无播放：清 ${lastPurgeMemory} 项内存缓存、`
+    + `${lastPurgeFiles} 个临时文件（${mb(lastPurgeFreed)}MB），耗时 ${Date.now() - started}ms`
+    + (error ? ` · 异常 ${error}` : ''));
+  return { ok: !error, reason, durationMs: Date.now() - started, state: purgeSnapshot() };
+}
+
+function evaluatePlaybackPurge() {
+  if (!PURGE_ENABLED || purgeRunning) return;
+  // 正在播放（哪怕已经连续看了两小时）持续刷新计时，从「停下来」那一刻才重新数
+  if (isBusy()) { notePlayback(); return; }
+  if (Date.now() - lastPlaybackAt < PURGE_MS) return;
+  void runPlaybackPurge('auto');
+}
+
 const cacheJanitor = setInterval(() => {
   if (!sleeping) janitorRemoved += pruneHgopCaches();
   evaluateIdle();
   if (!sleeping) maybeGc('idle');
+  evaluatePlaybackPurge();
 }, 30000);
 cacheJanitor.unref();
 
@@ -982,6 +1175,8 @@ const server = http.createServer(async (req, res) => {
   // Docker HEALTHCHECK 每 60s 打 /api/health，浏览器 SSE 长连接只在建立时
   // 请求一次 /api/events 之后每 20s 发 ping：这两类都不算「有人在用」。
   if (pathname !== '/api/health' && pathname !== '/api/events') noteActivity();
+  // 与 idle 的「有人在用」分开记：只有真正在放视频才刷新自动清理的计时。
+  if (isPlaybackPath(pathname)) notePlayback();
 
   if (pathname === '/api/health') {
     json(res, 200, {
@@ -1005,7 +1200,15 @@ const server = http.createServer(async (req, res) => {
         heapLimitMB: mb(require('node:v8').getHeapStatistics().heap_size_limit),
       },
       idle: idleSnapshot(),
+      cachePurge: purgeSnapshot(),
     });
+    return;
+  }
+  // 设置页「立即清理」按钮：与自动清理走同一套白名单与安全检查。
+  if (pathname === '/api/cache/purge') {
+    if (req.method !== 'POST') { json(res, 405, { ok: false, error: '需要 POST' }); return; }
+    const result = await runPlaybackPurge('manual');
+    json(res, result.skipped === 'busy' ? 409 : 200, result);
     return;
   }
   if (pathname === '/api/events') { serveEvents(req, res); return; }
@@ -1037,6 +1240,9 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   log(`红果短剧 Web 版已监听 http://${HOST}:${PORT}`);
   log(`[idle] 空闲降级${IDLE_SLEEP_ENABLED ? `已启用：无业务请求 ${IDLE_SLEEP_MINUTES} 分钟后清缓存 + full GC` : '已禁用'}`);
+  log(`[purge] 播放空闲清理${PURGE_ENABLED
+    ? `已启用：${PURGE_MINUTES} 分钟无播放自动清内存 + 磁盘可再生缓存${PURGE_DISK_ENABLED ? '' : '（仅内存）'}`
+    : '已禁用'}；完整 mp4 / 观看记录 / 账号永不删除`);
 });
 
 const keepAlive = setInterval(() => { log(`[心跳] SSE ${clients.size} 客户端, RSS ${Math.round(process.memoryUsage().rss / 1048576)}MB`); }, 5 * 60 * 1000);
