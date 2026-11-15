@@ -187,24 +187,33 @@ if (exists('server/index.js')) {
   check('自动清理与空闲降级共用内存清理实现',
     (srv.match(/purgePlaybackMemory\(\)/g) || []).length >= 2
     && srv.includes('hgop.plans.clear()') && srv.includes('fragmentCache'));
-  check('磁盘清理只认可再生白名单，完整 mp4 不在其中',
-    srv.includes('TEMP_DOWNLOAD_RE') && srv.includes('\\.mp4\\.part')
-    && srv.includes("'compat-cache'") && !srv.includes("name.endsWith('.mp4')")
-    && !srv.includes('rm(dir'));
+  check('完整 MP4 成片由独立开关控制（默认删，设 0 保留）',
+    srv.includes('HONGGUO_PLAYBACK_PURGE_MOVIES') && srv.includes('PURGE_MOVIES_ENABLED')
+    && srv.includes('MOVIE_RE') && srv.includes('TEMP_DOWNLOAD_RE'));
+  check('观看记录 / 账号文件不在任何清理目标里',
+    !/path\.join\(DATA_DIR,\s*'data\.json'\)/.test(srv)
+    && !/path\.join\(DATA_DIR,\s*'account'\)/.test(srv)
+    && srv.includes("'compat-cache'") && !srv.includes('rm(dir'));
   check('逐文件删除、跳过符号链接、带最小年龄保护',
     srv.includes('ent.isFile()') && srv.includes('fsp.lstat(p)')
     && srv.includes('PURGE_FILE_MIN_AGE_MS') && srv.includes('await fsp.unlink(p)'));
+  check('删除清单写日志并暴露在 health',
+    srv.includes('lastPurgeDeleted') && srv.includes('已删除') && srv.includes('lastDeleted'));
   check('/tmp 临时目录只认上游固定前缀',
     srv.includes('TEMP_WORKDIR_RE') && srv.includes('hongguo-(?:online|decrypt)-'));
   check('health 暴露清理状态 + 设置页可手动触发',
     srv.includes('cachePurge: purgeSnapshot()') && srv.includes("'/api/cache/purge'"));
   const badge = exists('web/version-badge.js') ? read('web/version-badge.js') : '';
   check('设置页展示清理状态与「立即清理」按钮',
-    badge.includes('cachePurge') && badge.includes("'/api/cache/purge'") && badge.includes('立即清理'));
+    badge.includes('cachePurge') && badge.includes("'/api/cache/purge'")
+    && badge.includes('立即清理') && badge.includes('cp.movies') && badge.includes('lastDeleted'));
   const deployEnv = fs.readFileSync(path.join(ROOT, 'deploy', '.env.example'), 'utf8');
-  check('部署配置暴露三个新开关',
+  check('部署配置暴露四个新开关',
     deployEnv.includes('PLAYBACK_PURGE=1') && deployEnv.includes('PLAYBACK_PURGE_MINUTES=60')
-    && deployEnv.includes('PLAYBACK_PURGE_DISK=1'));
+    && deployEnv.includes('PLAYBACK_PURGE_DISK=1')
+    && deployEnv.includes('PLAYBACK_PURGE_MOVIES=1'));
+  const deployCompose2 = fs.readFileSync(path.join(ROOT, 'deploy', 'docker-compose.yml'), 'utf8');
+  check('部署 compose 传入成片开关', deployCompose2.includes('HONGGUO_PLAYBACK_PURGE_MOVIES'));
 }
 
 // 8. 连播预热（换集秒开：修掉「只预热 1 集 + 后一个被丢弃」与 90s TTL 过期）

@@ -972,26 +972,31 @@ function maybeGc(reason) {
  * 浏览剧集、搜索、翻页都不算播放，所以页面一直开着但一小时没点开视频，
  * 播放期间攒下的可再生文件也会被收掉。
  *
- * 安全边界（绝不碰用户数据）：
- *   data/downloads/ 下只删下载中断留下的 .enc.tmp / .mp4.part / .tmp_*.mp4，
- *   完整的 *.mp4 成片、data.json（观看记录）、account/（账号）、safe-storage.key
- *   一律保留；compat-cache / cache / logs 是纯再生目录；/tmp 只认
+ * 清理范围（2026-11-15 按需求调整）：
+ *   data/downloads/ 下的 *.mp4 完整成片 **也会删**（默认开），以及下载中断留下的
+ *   .enc.tmp / .mp4.part / .tmp_*.mp4；data.json（观看记录/播放进度）、
+ *   account/（账号）、safe-storage.key、device.json 一律保留。
+ *   compat-cache / cache / logs 是纯再生目录；/tmp 只认
  *   hongguo-online-*、hongguo-decrypt-* 两个上游 mkdtemp 前缀。
- *   所有候选文件还需「≥10 分钟未修改」，避免误删正在写入的转码产物。
+ *   所有候选文件还需「≥10 分钟未修改」，避免误删正在写入的转码/下载产物。
+ *   删除清单会写进容器日志，并保留在 /api/health 的 cachePurge.lastDeleted。
  *
  * HONGGUO_PLAYBACK_PURGE=0 一键禁用；HONGGUO_PLAYBACK_PURGE_MINUTES 改阈值（5~1440）；
- * HONGGUO_PLAYBACK_PURGE_DISK=0 可只清内存不清磁盘。
+ * HONGGUO_PLAYBACK_PURGE_DISK=0 可只清内存不清磁盘；
+ * HONGGUO_PLAYBACK_PURGE_MOVIES=0 只清可再生缓存，保留完整 MP4 成片（后悔药开关）。
  */
 const PURGE_ENABLED = process.env.HONGGUO_PLAYBACK_PURGE !== '0';
 const PURGE_MINUTES = Math.min(24 * 60, Math.max(5,
   Number(process.env.HONGGUO_PLAYBACK_PURGE_MINUTES || 60) || 60));
 const PURGE_MS = PURGE_MINUTES * 60 * 1000;
 const PURGE_DISK_ENABLED = process.env.HONGGUO_PLAYBACK_PURGE_DISK !== '0';
+const PURGE_MOVIES_ENABLED = process.env.HONGGUO_PLAYBACK_PURGE_MOVIES !== '0';
 const PURGE_FILE_MIN_AGE_MS = 10 * 60 * 1000;
 const PURGE_LOG_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const DATA_DIR = shim.__web.dataDir;
-// 只有「半成品」文件名能进删除白名单；完整的 xxx.mp4 永远不匹配。
+// 半成品文件名；完整 *.mp4 由独立的开关 PURGE_MOVIES_ENABLED 控制。
 const TEMP_DOWNLOAD_RE = /(?:\.enc\.tmp(?:\.decoded)?|\.mp4\.part)$|^\.tmp_.*\.mp4$/;
+const MOVIE_RE = /\.mp4$/i;
 const TEMP_WORKDIR_RE = /^hongguo-(?:online|decrypt)-/;
 
 let lastPlaybackAt = Date.now();
@@ -1004,6 +1009,7 @@ let lastPurgeFiles = 0;
 let lastPurgeMemory = 0;
 let lastPurgeFailures = 0;
 let lastPurgeError = null;
+let lastPurgeDeleted = [];   // 最近一次删除的清单（相对 data 目录，最多 20 条）
 
 function notePlayback() { lastPlaybackAt = Date.now(); }
 
@@ -1019,6 +1025,7 @@ function purgeSnapshot() {
   return {
     enabled: PURGE_ENABLED,
     disk: PURGE_DISK_ENABLED,
+    movies: PURGE_MOVIES_ENABLED,
     idleMinutes: PURGE_MINUTES,
     noPlaybackSec: Math.round(since / 1000),
     nextInSec: PURGE_ENABLED && !purgeRunning
@@ -1034,13 +1041,17 @@ function purgeSnapshot() {
     memoryItems: lastPurgeMemory,
     failures: lastPurgeFailures,
     lastError: lastPurgeError,
-    keeps: ['downloads/*.mp4', 'data.json', 'account/*', 'safe-storage.key'],
+    lastDeleted: lastPurgeDeleted,
+    // 播放记录 / 账号无论开关如何都不删；完整 MP4 只在 movies=1 时才清
+    keeps: PURGE_MOVIES_ENABLED
+      ? ['data.json', 'account/*', 'account-session.bin', 'safe-storage.key', 'device.json']
+      : ['downloads/*.mp4', 'data.json', 'account/*', 'safe-storage.key'],
   };
 }
 
 /** 逐文件判断白名单 + 最小年龄，绝不整目录 rm -rf，也不跟随符号链接。 */
 async function sweepFiles(dir, accept, depth, minAgeMs) {
-  const out = { freed: 0, files: 0, failures: 0 };
+  const out = { freed: 0, files: 0, failures: 0, deleted: [] };
   let entries;
   try { entries = await fsp.readdir(dir, { withFileTypes: true }); }
   catch { return out; }   // 目录不存在是常态（线上 compat-cache 通常是空的）
@@ -1050,6 +1061,7 @@ async function sweepFiles(dir, accept, depth, minAgeMs) {
       if (depth > 0) {
         const sub = await sweepFiles(p, accept, depth - 1, minAgeMs);
         out.freed += sub.freed; out.files += sub.files; out.failures += sub.failures;
+        out.deleted.push(...sub.deleted);
       }
       continue;
     }
@@ -1060,20 +1072,31 @@ async function sweepFiles(dir, accept, depth, minAgeMs) {
       await fsp.unlink(p);
       out.freed += st.size;
       out.files++;
+      if (out.deleted.length < 50) {
+        out.deleted.push({
+          file: p.startsWith(DATA_DIR) ? path.relative(DATA_DIR, p) : p,
+          mb: mb(st.size),
+        });
+      }
     } catch { out.failures++; }
   }
   return out;
 }
 
 async function purgeDiskCaches() {
-  const out = { freed: 0, files: 0, failures: 0 };
+  const out = { freed: 0, files: 0, failures: 0, deleted: [] };
   const add = r => {
     out.freed += r.freed; out.files += r.files; out.failures += r.failures;
+    out.deleted.push(...r.deleted);
   };
+  // data.json / account / safe-storage.key / device.json 不在任何 target 里，
+  // 观看记录与账号永远不会进入删除流程。
   const targets = [
     [path.join(DATA_DIR, 'compat-cache'), () => true, 0, PURGE_FILE_MIN_AGE_MS],
     [path.join(DATA_DIR, 'cache'), () => true, 1, PURGE_FILE_MIN_AGE_MS],
-    [path.join(DATA_DIR, 'downloads'), name => TEMP_DOWNLOAD_RE.test(name), 4, PURGE_FILE_MIN_AGE_MS],
+    [path.join(DATA_DIR, 'downloads'),
+      name => TEMP_DOWNLOAD_RE.test(name) || (PURGE_MOVIES_ENABLED && MOVIE_RE.test(name)),
+      4, PURGE_FILE_MIN_AGE_MS],
     [path.join(DATA_DIR, 'logs'), name => /\.log(?:\.gz)?$/.test(name), 1, PURGE_LOG_MIN_AGE_MS],
   ];
   for (const [dir, accept, depth, age] of targets) add(await sweepFiles(dir, accept, depth, age));
@@ -1101,7 +1124,7 @@ async function runPlaybackPurge(reason) {
   purgeRunning = true;
   const started = Date.now();
   let memoryItems = 0;
-  let disk = { freed: 0, files: 0, failures: 0 };
+  let disk = { freed: 0, files: 0, failures: 0, deleted: [] };
   let error = null;
   try {
     if (PURGE_DISK_ENABLED) disk = await purgeDiskCaches();
@@ -1121,13 +1144,19 @@ async function runPlaybackPurge(reason) {
     lastPurgeFailures = disk.failures;
     lastPurgeMemory = memoryItems;
     lastPurgeError = error;
+    lastPurgeDeleted = disk.deleted.slice(0, 20);
     // 重新计时，否则 30s 后的下一轮管家会因为「仍然满足 1 小时」反复清理。
     // 任何一次真实播放请求都会再次刷新这个时间戳。
     lastPlaybackAt = Date.now();
   }
   log(`[purge] ${reason} · ${PURGE_MINUTES} 分钟无播放：清 ${lastPurgeMemory} 项内存缓存、`
-    + `${lastPurgeFiles} 个临时文件（${mb(lastPurgeFreed)}MB），耗时 ${Date.now() - started}ms`
+    + `${lastPurgeFiles} 个文件（${mb(lastPurgeFreed)}MB），耗时 ${Date.now() - started}ms`
     + (error ? ` · 异常 ${error}` : ''));
+  // 删除清单落日志：用户事后能查到到底清掉了哪些成片，不是静默删除。
+  for (const item of lastPurgeDeleted) log(`[purge] 已删除 ${item.file}（${item.mb}MB）`);
+  if (disk.deleted.length > lastPurgeDeleted.length) {
+    log(`[purge] 另有 ${disk.deleted.length - lastPurgeDeleted.length} 个文件，清单已截断`);
+  }
   return { ok: !error, reason, durationMs: Date.now() - started, state: purgeSnapshot() };
 }
 
@@ -1241,8 +1270,8 @@ server.listen(PORT, HOST, () => {
   log(`红果短剧 Web 版已监听 http://${HOST}:${PORT}`);
   log(`[idle] 空闲降级${IDLE_SLEEP_ENABLED ? `已启用：无业务请求 ${IDLE_SLEEP_MINUTES} 分钟后清缓存 + full GC` : '已禁用'}`);
   log(`[purge] 播放空闲清理${PURGE_ENABLED
-    ? `已启用：${PURGE_MINUTES} 分钟无播放自动清内存 + 磁盘可再生缓存${PURGE_DISK_ENABLED ? '' : '（仅内存）'}`
-    : '已禁用'}；完整 mp4 / 观看记录 / 账号永不删除`);
+    ? `已启用：${PURGE_MINUTES} 分钟无播放自动清内存 + 磁盘缓存${PURGE_DISK_ENABLED ? '' : '（仅内存）'}`
+    : '已禁用'}；完整 MP4 成片${PURGE_MOVIES_ENABLED ? '也会删除' : '保留'}；观看记录 / 账号永不删除`);
 });
 
 const keepAlive = setInterval(() => { log(`[心跳] SSE ${clients.size} 客户端, RSS ${Math.round(process.memoryUsage().rss / 1048576)}MB`); }, 5 * 60 * 1000);

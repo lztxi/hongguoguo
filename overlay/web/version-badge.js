@@ -285,9 +285,9 @@
             + Number(cp.freedMB || 0).toFixed(1) + 'MB（'
             + (cp.files || 0) + ' 个临时文件 / ' + (cp.memoryItems || 0) + ' 项内存缓存）'
           : '尚未清理过';
-        cacheHint.textContent = cp.idleMinutes
-          + ' 分钟没播放就自动清缓存（完整视频与观看记录不动）　·　上次：'
-          + lastPart + '　·　距下次：' + next;
+        cacheHint.textContent = cp.idleMinutes + ' 分钟没播放就自动清缓存（'
+          + (cp.movies ? '含已下载的完整视频，播放记录保留' : '完整视频与播放记录都保留')
+          + '）　·　上次：' + lastPart + '　·　距下次：' + next;
       }
     }
 
@@ -312,8 +312,16 @@
       if (cp.enabled) {
         addRow('已无播放 / 距下次',
           fmtSec(cp.noPlaybackSec) + ' / ' + (cp.nextInSec == null ? '—' : fmtSec(cp.nextInSec)));
+        addRow('完整 MP4 成片', cp.movies ? '满阈值即删（观看记录保留）' : '保留不删');
         addRow('累计清理 / 上次释放',
           (cp.count || 0) + ' 次 / ' + Number(cp.freedMB || 0).toFixed(1) + 'MB');
+        if (cp.lastDeleted && cp.lastDeleted.length) {
+          addRow('上次删除清单', cp.lastDeleted.length + ' 项 · '
+            + cp.lastDeleted.slice(0, 2).map(function (x) {
+              return String(x.file || '').split('/').pop();
+            }).join('、')
+            + (cp.lastDeleted.length > 2 ? ' 等（详见容器日志）' : ''));
+        }
         if (cp.lastError) addRow('上次清理异常', String(cp.lastError));
       }
     }

@@ -328,7 +328,8 @@ chmod +x /root/hongguo-web/maintain.sh
 
 上一节的「空闲降级」判的是**有没有业务请求**，只要页面开着刷剧卡就一直不降级，
 而且只清内存、不碰磁盘。这一节是另一套独立判定：**默认 60 分钟没有播放视频**
-（浏览、搜索、翻页、设置页都不算播放），就把播放期间攒下的可再生缓存连内存带磁盘一起收掉。
+（浏览、搜索、翻页、设置页都不算播放），就把播放期间攒下的缓存连内存带磁盘一起收掉。
+按实际需求，**下载好的完整 MP4 成片也会删除**，只有观看记录等账号数据保留。
 
 - **计时方式**：只有 `/hgop/stream/`、`/hgop/prefetch/`、`/__stream/`、`/__local/`
   这些真正代表「在放视频」的请求才刷新计时；正在播放 / 预热 / 分片进行中时
@@ -336,16 +337,19 @@ chmod +x /root/hongguo-web/maintain.sh
 - **清什么**：内存侧复用 `purgePlaybackMemory()`（hgop 播放计划、LRU、首片预缓冲、
   `fragmentCache` 等新版内核的额外 Map，以及上游 `clear-online-cache` 的整集读取缓存），
   再连做两次 full GC；磁盘侧清 `compat-cache/` 转码缓存、`cache/`、
-  `downloads/` 下**下载中断留下的** `.enc.tmp` / `.mp4.part` / `.tmp_*.mp4`、
-  `logs/` 里超过 7 天的旧日志，以及 `/tmp` 下 `hongguo-online-*` / `hongguo-decrypt-*`
-  两个上游 mkdtemp 临时目录。
-- **不碰什么**（硬边界）：`downloads/` 里完整的 `*.mp4` 成片、`data.json` 观看记录、
-  `account/` 与 `account-session.bin` 登录态、`safe-storage.key`、`device.json`。
+  `downloads/` 下**所有完整 `*.mp4` 成片**与下载中断留下的
+  `.enc.tmp` / `.mp4.part` / `.tmp_*.mp4`、`logs/` 里超过 7 天的旧日志，
+  以及 `/tmp` 下 `hongguo-online-*` / `hongguo-decrypt-*` 两个上游 mkdtemp 临时目录。
+- **保留什么**（硬边界）：`data.json` 观看记录与播放进度、`account/` 与
+  `account-session.bin` 登录态、`safe-storage.key`、`device.json` —— 这些文件
+  **不在任何清理目标目录里**，无论开关如何都不会进删除流程。
   删除是**逐文件白名单判断**，不整目录 `rm -rf`，不跟随符号链接；所有候选文件
   还要求「≥10 分钟未修改」，避免误删正在写入的转码/下载产物。
 - **看得见**：`/api/health` 的 `cachePurge` 报告 `noPlaybackSec` / `nextInSec` /
-  `count` / `lastAt` / `freedMB` / `files` / `memoryItems` / `lastError`；设置页的
-  「版本与运行状态」卡片显示上次清理与释放量，并有「立即清理」按钮
+  `count` / `lastAt` / `freedMB` / `files` / `memoryItems` / `movies` /
+  `lastDeleted`（最近一次删除清单，最多 20 条）；每次清理都会把删除清单逐条写进
+  容器日志 `[purge] 已删除 ...`，不静默删；设置页的「版本与运行状态」卡片显示
+  上次清理、释放量与成片开关状态，并有「立即清理」按钮
   （`POST /api/cache/purge`，正在播放时返回 409，不会打断观看）。
 
 可在 `deploy/.env` 调整，改完 `docker compose up -d` 生效：
@@ -355,11 +359,12 @@ chmod +x /root/hongguo-web/maintain.sh
 | `PLAYBACK_PURGE` | `1` | `0` = 完全禁用自动清理 |
 | `PLAYBACK_PURGE_MINUTES` | `60` | 无播放多少分钟后清理（5~1440） |
 | `PLAYBACK_PURGE_DISK` | `1` | `0` = 只清内存，不碰任何磁盘文件 |
+| `PLAYBACK_PURGE_MOVIES` | `1` | `0` = **保留**完整 MP4 成片，只清临时缓存（后悔药） |
 
-> 这套机制的意义是**防止长期堆积**：玩客云线上 `data/` 45MB 里有 44MB 是手动下载的
-> 两部完整 MP4，属于用户数据，永远不会被自动清理；可再生的转码缓存平时接近 0，
-> 但连续看剧、切集、兼容转码后可能涨到几百 MB，此时一小时后就会自动回收。
-> 想连下载成片一起清，得在界面里手动删，或明确开启上游的「自动删除已看」设置。
+> ⚠️ **完整 MP4 删除不可恢复**：线上 `data/` 45MB 里的 44MB 是手动下载的两部剧，
+> 开启 `PLAYBACK_PURGE_MOVIES=1` 后，满 1 小时无播放就会被清掉，且没有回收站。
+> 以后下载的任何一集也是同样待遇 —— 想长期留片请设 `PLAYBACK_PURGE_MOVIES=0`，
+> 或者把成片放到 `data/downloads/` 之外的目录（清理只扫这个目录）。
 
 ## 本地复现构建（不推镜像）
 
