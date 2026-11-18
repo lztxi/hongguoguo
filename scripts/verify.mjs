@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import module from 'node:module';
 import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +51,46 @@ check('上游 preload.js', exists('app/preload.js'));
 check('上游 package.json', exists('app/package.json'));
 check('hgop 目录', exists('hgop/services/streamService.js') && exists('hgop/native/app-source.js'));
 check('hgop LICENSE (AGPL)', exists('hgop/LICENSE') && read('hgop/LICENSE').includes('AFFERO GENERAL PUBLIC LICENSE'));
+
+// v1.12.3 的 device-session.js 开始 require('tough-cookie')，但镜像只按 jackotom 的
+// package.json 装依赖。漏装会 MODULE_NOT_FOUND → hgop 加载失败 → health.hgop=false →
+// update.sh 健康检查永远不过、每次自动回滚。按实际 require 校验，防止下次再漏。
+if (exists('hgop')) {
+  const builtins = new Set(module.builtinModules.map(n => n.replace(/^node:/, '')));
+  const bare = new Set();
+  const scanDeps = rel => {
+    const abs = path.join(BUILD, rel);
+    for (const ent of fs.readdirSync(abs, { withFileTypes: true })) {
+      const child = path.join(rel, ent.name);
+      if (ent.isDirectory()) scanDeps(child);
+      else if (ent.name.endsWith('.js')) {
+        const src = fs.readFileSync(path.join(BUILD, child), 'utf8');
+        for (const m of src.matchAll(/require\(['"]([^'"]+)['"]\)/g)) {
+          const name = m[1];
+          if (name.startsWith('.') || name.startsWith('/') || name.startsWith('node:')) continue;
+          const root = name.startsWith('@')
+            ? name.split('/').slice(0, 2).join('/') : name.split('/')[0];
+          if (!builtins.has(root) && root !== 'electron') bare.add(root);
+        }
+      }
+    }
+  };
+  scanDeps('hgop');
+  const appPkg = exists('app/package.json')
+    ? JSON.parse(read('app/package.json')) : { dependencies: {} };
+  const undeclared = [...bare].filter(n => !appPkg.dependencies?.[n]);
+  check('播放内核外部依赖已并入镜像 package.json', undeclared.length === 0,
+    undeclared.length ? '缺少 ' + undeclared.join(', ') : [...bare].sort().join(', '));
+  if (!undeclared.length && fs.existsSync(path.join(BUILD, 'app', 'node_modules'))) {
+    const req = module.createRequire(path.join(BUILD, 'app', 'package.json'));
+    const unresolved = [];
+    for (const name of bare) {
+      try { req.resolve(name); } catch { unresolved.push(name); }
+    }
+    check('内核依赖在 node_modules 中可解析', unresolved.length === 0,
+      unresolved.length ? '无法解析 ' + unresolved.join(', ') : '');
+  }
+}
 
 // 3. 补丁重放结果：每条 replace 的特征串必须出现，原始 find 必须消失
 const ss = exists('hgop/services/streamService.js') ? read('hgop/services/streamService.js') : '';

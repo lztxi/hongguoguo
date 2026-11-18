@@ -374,6 +374,19 @@ chmod +x /root/hongguo-web/maintain.sh
 > 以后下载的任何一集也是同样待遇 —— 想长期留片请设 `PLAYBACK_PURGE_MOVIES=0`，
 > 或者把成片放到 `data/downloads/` 之外的目录（清理只扫这个目录）。
 
+## 上游内核依赖同步（v1.12.3 踩坑记录）
+
+镜像只按 jackotom 的 `app/package.json` 装运行时依赖；zfdang 内核以前没引入新的
+npm 包，所以一直没事。**v1.12.3 起 `native/device-session.js` 用到 `tough-cookie`**，
+漏装会直接 `MODULE_NOT_FOUND` → 内核加载失败 → `/api/health` 里 `hgop:false` →
+`update.sh` 的健康检查判定失败、每次自动回滚，表现就是「镜像拉得到、容器起得来，
+但永远更新不了新版」。
+
+`scripts/sync.mjs` 现在会扫描 `build/hgop/` 里所有 `require()` 的裸包名，
+排除 Node 内置模块后，按 zfdang 上游声明的版本自动并入镜像的 `app/package.json`；
+`scripts/verify.mjs` 同时校验「已声明」和「本地 node_modules 可解析」。
+以后上游再加依赖不用手改清单。
+
 ## 本地复现构建（不推镜像）
 
 ```bash

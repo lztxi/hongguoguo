@@ -14,6 +14,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import module from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -170,6 +171,50 @@ log(`上游 2 就位：${z.repo} ${z.tag} (${z.sha.slice(0, 10)})`);
 
 // ------------------------------------------------------------------ 4. 锚点补丁
 const patchIds = applyPatches(path.join(BUILD, 'hgop'));
+
+// ------------------------------------------------------------- 4.5 内核运行依赖
+// 镜像只按 jackotom 的 app/package.json 装运行时依赖，而 zfdang 内核以前没新增过
+// 外部包，所以一直没暴露问题。v1.12.3 起 device-session.js require('tough-cookie')，
+// 没装 → hgop 加载失败 → health.hgop=false → update.sh 健康检查不过、每次自动回滚。
+// 这里按「内核代码实际 require 的裸包名」把依赖自动并入镜像 package.json，
+// 版本沿用上游内核自己的声明；以后上游再加依赖也不会漏。
+{
+  const zPkg = JSON.parse(fs.readFileSync(path.join(zRoot, 'package.json'), 'utf8'));
+  const appPkgPath = path.join(BUILD, 'app', 'package.json');
+  const appPkg = JSON.parse(fs.readFileSync(appPkgPath, 'utf8'));
+  const builtins = new Set(module.builtinModules.map(n => n.replace(/^node:/, '')));
+  const bare = new Set();
+  const scan = dir => {
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) scan(p);
+      else if (ent.name.endsWith('.js')) {
+        const src = fs.readFileSync(p, 'utf8');
+        for (const m of src.matchAll(/require\(['"]([^'"]+)['"]\)/g)) {
+          const name = m[1];
+          if (name.startsWith('.') || name.startsWith('/') || name.startsWith('node:')) continue;
+          const root = name.startsWith('@') ? name.split('/').slice(0, 2).join('/') : name.split('/')[0];
+          if (!builtins.has(root) && root !== 'electron') bare.add(root);
+        }
+      }
+    }
+  };
+  scan(path.join(BUILD, 'hgop'));
+  const added = [];
+  const undeclared = [];
+  for (const name of [...bare].sort()) {
+    if (appPkg.dependencies?.[name]) continue;
+    const version = zPkg.dependencies?.[name];
+    if (!version) { undeclared.push(name); continue; }
+    appPkg.dependencies[name] = version;
+    added.push(`${name}@${version}`);
+  }
+  if (added.length) {
+    fs.writeFileSync(appPkgPath, JSON.stringify(appPkg, null, 2) + '\n');
+    log(`内核运行时依赖已并入镜像：${added.join(', ')}`);
+  }
+  if (undeclared.length) warn(`内核引用但上游未声明的依赖：${undeclared.join(', ')}`);
+}
 
 // ------------------------------------------------------------------ 5. 定制层
 copyFile(path.join(OVERLAY, 'Dockerfile'), path.join(BUILD, 'Dockerfile'));
